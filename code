@@ -1,0 +1,335 @@
+/**
+ * Get all available reports and their details
+ */
+function getAllAvailableReports() {
+  const props = PropertiesService.getScriptProperties();
+  const SID   = props.getProperty('IMPACT_SID');
+  const TOKEN = props.getProperty('IMPACT_TOKEN');
+  const endpoint = `https://api.impact.com/Mediapartners/${SID}/Reports`;
+  const basic = Utilities.base64Encode(`${SID}:${TOKEN}`);
+  
+  const res = UrlFetchApp.fetch(endpoint, {
+    headers: {
+      Authorization: `Basic ${basic}`,
+      Accept:        'application/json'
+    },
+    muteHttpExceptions: true
+  });
+  
+  if (res.getResponseCode() !== 200) {
+    throw new Error('List Reports error: ' + res.getContentText());
+  }
+  
+  const payload = JSON.parse(res.getContentText());
+  const reports = payload.Reports || [];
+  
+  // Return only the IDs of ApiAccessible reports
+  return reports
+    .filter(r => r.ApiAccessible)
+    .map(r => ({ id: r.Id, name: r.Name || r.Id }));
+}
+
+/**
+ * Enhanced daily snapshot - now for ALL accessible reports
+ */
+function createDailySnapshotAllReports() {
+  const props = PropertiesService.getScriptProperties();
+  const SID   = props.getProperty('IMPACT_SID');
+  const TOKEN = props.getProperty('IMPACT_TOKEN');
+  
+  const startDate = new Date('2025-07-01T00:00:00Z');
+  const endDate = new Date();
+  const start = startDate.toISOString();
+  const end = endDate.toISOString();
+  
+  const basicAuth = Utilities.base64Encode(`${SID}:${TOKEN}`);
+  
+  // Get all accessible reports
+  const reports = getAllAvailableReports();
+  console.log(`Scheduling snapshots for ${reports.length} reports...`);
+  
+  const scheduledJobs = {};
+  const failedReports = [];
+  
+  reports.forEach((report, index) => {
+    try {
+      const url = `https://api.impact.com/Mediapartners/${SID}/ReportExport/${report.id}` +
+                  `?startTime=${encodeURIComponent(start)}` +
+                  `&endTime=${encodeURIComponent(end)}` +
+                  `&subid=mula`;
+                  
+      const res = UrlFetchApp.fetch(url, {
+        headers: {
+          Authorization: `Basic ${basicAuth}`,
+          Accept:        'application/json'
+        },
+        muteHttpExceptions: true
+      });
+      
+      if (res.getResponseCode() === 200) {
+        const job = JSON.parse(res.getContentText());
+        const jobId = job.QueuedUri.match(/\/Jobs\/([^/]+)/)[1];
+        
+        scheduledJobs[report.id] = {
+          jobId: jobId,
+          reportName: report.name
+        };
+        
+        console.log(`✓ ${report.id}: ${jobId}`);
+      } else {
+        console.log(`✗ ${report.id}: ${res.getResponseCode()}`);
+        failedReports.push(report.id);
+      }
+    } catch (error) {
+      console.log(`✗ ${report.id}: ${error.message}`);
+      failedReports.push(report.id);
+    }
+    
+    // Don't overwhelm the API
+    if (index < reports.length - 1) {
+      Utilities.sleep(2000);
+    }
+  });
+  
+  // Store all job IDs
+  props.setProperty('ALL_SNAPSHOT_JOBS', JSON.stringify(scheduledJobs));
+  props.setProperty('SNAPSHOT_DATE', new Date().toISOString());
+  props.setProperty('FAILED_REPORTS', JSON.stringify(failedReports));
+  
+  Logger.log(`Scheduled ${Object.keys(scheduledJobs).length} report snapshots`);
+  return scheduledJobs;
+}
+
+/**
+ * Fetch all report snapshots and update tracking
+ */
+function fetchAllSnapshotsAndUpdate() {
+  const props = PropertiesService.getScriptProperties();
+  const SID   = props.getProperty('IMPACT_SID');
+  const TOKEN = props.getProperty('IMPACT_TOKEN');
+  const basic = Utilities.base64Encode(`${SID}:${TOKEN}`);
+  
+  const scheduledJobsJson = props.getProperty('ALL_SNAPSHOT_JOBS');
+  const snapshotDate = props.getProperty('SNAPSHOT_DATE');
+  
+  if (!scheduledJobsJson) {
+    throw new Error('No scheduled jobs. Run createDailySnapshotAllReports() first.');
+  }
+  
+  const scheduledJobs = JSON.parse(scheduledJobsJson);
+  const reportIds = Object.keys(scheduledJobs);
+  
+  console.log(`Fetching ${reportIds.length} scheduled report snapshots...`);
+  
+  const ss = SpreadsheetApp.openById('1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY');
+  const today = new Date(snapshotDate).toLocaleDateString();
+  
+  const completedReports = [];
+  const failedFetches = [];
+  
+  reportIds.forEach((reportId, index) => {
+    const jobInfo = scheduledJobs[reportId];
+    console.log(`\n${index + 1}/${reportIds.length}: Fetching ${reportId}...`);
+    
+    try {
+      const jobUrl = `https://api.impact.com/Mediapartners/${SID}/Jobs/${jobInfo.jobId}`;
+      let status, downloadUrl;
+      
+      // Poll for completion
+      for (let i = 0; i < 15; i++) {
+        Utilities.sleep(8000);
+        const res = UrlFetchApp.fetch(jobUrl, {
+          headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
+          muteHttpExceptions: true
+        });
+        
+        if (res.getResponseCode() !== 200) {
+          throw new Error(`Job check failed: ${res.getContentText()}`);
+        }
+        
+        const info = JSON.parse(res.getContentText());
+        status = (info.Status || '').toLowerCase();
+        
+        if (status === 'completed') {
+          downloadUrl = 'https://api.impact.com' + info.ResultUri;
+          break;
+        } else if (status === 'failed') {
+          throw new Error(`Job failed`);
+        }
+        
+        console.log(`  Poll ${i+1}: ${status}`);
+      }
+      
+      if (status !== 'completed') {
+        throw new Error(`Not ready after polling`);
+      }
+      
+      // Download CSV
+      const csvResponse = UrlFetchApp.fetch(downloadUrl, { 
+        headers: { Authorization: `Basic ${basic}` } 
+      });
+      const csv = Utilities.parseCsv(csvResponse.getContentText());
+      
+      if (!csv || csv.length === 0) {
+        throw new Error('No data received');
+      }
+      
+      // Create or update tracking sheet for this report
+      const sheetName = `Daily_${reportId.substring(0, 25)}`;
+      let trackingSheet = ss.getSheetByName(sheetName);
+      
+      if (!trackingSheet) {
+        trackingSheet = ss.insertSheet(sheetName);
+        
+        // Set up headers
+        const trackingHeaders = ['Snapshot_Date', ...csv[0]];
+        trackingSheet.getRange(1, 1, 1, trackingHeaders.length).setValues([trackingHeaders]);
+        
+        // Format header
+        const headerRange = trackingSheet.getRange(1, 1, 1, trackingHeaders.length);
+        headerRange.setFontWeight('bold');
+        headerRange.setBackground('#e3f2fd');
+        headerRange.setFontColor('#0277bd');
+        trackingSheet.setFrozenRows(1);
+        
+        // Add metadata
+        trackingSheet.getRange('A1').setNote(
+          `Daily tracking for: ${reportId}\n` +
+          `Report name: ${jobInfo.reportName}\n` +
+          `Each row represents one day's cumulative data`
+        );
+      }
+      
+      // Add today's data
+      const lastRow = trackingSheet.getLastRow();
+      for (let i = 1; i < csv.length; i++) {
+        const rowData = [today, ...csv[i]];
+        trackingSheet.getRange(lastRow + i, 1, 1, rowData.length).setValues([rowData]);
+      }
+      
+      completedReports.push({
+        reportId: reportId,
+        reportName: jobInfo.reportName,
+        sheetName: sheetName,
+        rowsAdded: csv.length - 1
+      });
+      
+      console.log(`✓ ${reportId}: ${csv.length - 1} rows added to ${sheetName}`);
+      
+    } catch (error) {
+      console.log(`✗ ${reportId}: ${error.message}`);
+      failedFetches.push({
+        reportId: reportId,
+        error: error.message
+      });
+    }
+  });
+  
+  // Update or create summary sheet
+  let summarySheet = ss.getSheetByName('Daily Summary');
+  if (!summarySheet) {
+    summarySheet = ss.insertSheet('Daily Summary', 0); // Insert as first sheet
+  }
+  
+  // Create/update summary
+  const summaryData = [
+    ['Date', 'Report ID', 'Report Name', 'Sheet Name', 'Rows Added', 'Status'],
+    ...completedReports.map(r => [today, r.reportId, r.reportName, r.sheetName, r.rowsAdded, 'Success']),
+    ...failedFetches.map(f => [today, f.reportId, 'N/A', 'N/A', 0, f.error])
+  ];
+  
+  // If this is the first run, clear and add headers
+  if (summarySheet.getLastRow() === 0) {
+    summarySheet.getRange(1, 1, summaryData.length, summaryData[0].length).setValues(summaryData);
+    
+    // Format header
+    const headerRange = summarySheet.getRange(1, 1, 1, summaryData[0].length);
+    headerRange.setFontWeight('bold');
+    headerRange.setBackground('#fff3e0');
+    headerRange.setFontColor('#e65100');
+    summarySheet.setFrozenRows(1);
+  } else {
+    // Append today's results (skip header)
+    const dataToAdd = summaryData.slice(1);
+    const nextRow = summarySheet.getLastRow() + 1;
+    summarySheet.getRange(nextRow, 1, dataToAdd.length, dataToAdd[0].length).setValues(dataToAdd);
+  }
+  
+  Logger.log(`All snapshots complete: ${completedReports.length} successful, ${failedFetches.length} failed`);
+  
+  return {
+    completed: completedReports,
+    failed: failedFetches,
+    snapshotDate: today,
+    sheetUrl: ss.getUrl()
+  };
+}
+
+/**
+ * Enhanced one-click daily update for ALL reports
+ */
+function runDailyUpdateAllReports() {
+  try {
+    Logger.log('Starting daily snapshot update for ALL accessible reports...');
+    
+    const scheduledJobs = createDailySnapshotAllReports();
+    Logger.log(`Scheduled ${Object.keys(scheduledJobs).length} report jobs`);
+    
+    // Wait for jobs to process
+    Logger.log('Waiting for exports to process...');
+    Utilities.sleep(20000);
+    
+    const result = fetchAllSnapshotsAndUpdate();
+    
+    Logger.log(`🎉 Daily update for ALL reports completed!`);
+    Logger.log(`✓ ${result.completed.length} reports updated successfully`);
+    Logger.log(`✗ ${result.failed.length} reports failed`);
+    Logger.log(`📅 Snapshot date: ${result.snapshotDate}`);
+    Logger.log(`🔗 Sheet: ${result.sheetUrl}`);
+    
+    return result;
+    
+  } catch (error) {
+    Logger.log(`❌ Daily update error: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Set up automatic daily triggers for all reports
+ */
+function setupDailyTriggerAllReports() {
+  // Delete existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'runDailyUpdateAllReports') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new daily trigger at 9 AM
+  ScriptApp.newTrigger('runDailyUpdateAllReports')
+    .timeBased()
+    .everyDays(1)
+    .atHour(9)
+    .create();
+    
+  Logger.log('Set up daily trigger for ALL reports at 9 AM');
+}
+
+// Keep your original single-report functions too
+function createDailySnapshot() {
+  // ... your existing code stays the same
+}
+
+function fetchAndAppendSnapshot() {
+  // ... your existing code stays the same  
+}
+
+function runDailyUpdate() {
+  // ... your existing code stays the same
+}
+
+function setupDailyTrigger() {
+  // ... your existing code stays the same
+}
