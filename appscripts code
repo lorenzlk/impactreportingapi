@@ -1,7 +1,7 @@
 /**
- * Get all available reports and their details
+ * Pure discovery: Get all available reports and their data
  */
-function getAllAvailableReports() {
+function discoverAllReports() {
   const props = PropertiesService.getScriptProperties();
   const SID   = props.getProperty('IMPACT_SID');
   const TOKEN = props.getProperty('IMPACT_TOKEN');
@@ -23,41 +23,49 @@ function getAllAvailableReports() {
   const payload = JSON.parse(res.getContentText());
   const reports = payload.Reports || [];
   
-  // Return only the IDs of ApiAccessible reports
-  return reports
-    .filter(r => r.ApiAccessible)
-    .map(r => ({ id: r.Id, name: r.Name || r.Id }));
+  // Log what we found
+  console.log(`\nDISCOVERY: Found ${reports.length} total reports`);
+  console.log('API Accessible reports:');
+  
+  const accessible = reports.filter(r => r.ApiAccessible);
+  accessible.forEach((report, index) => {
+    console.log(`${index + 1}. ${report.Id} - ${report.Name || 'No name'}`);
+  });
+  
+  console.log(`\nRestricted reports:`);
+  const restricted = reports.filter(r => !r.ApiAccessible);
+  restricted.forEach((report, index) => {
+    console.log(`${index + 1}. ${report.Id} - ${report.Name || 'No name'}`);
+  });
+  
+  Logger.log(`Discovery complete: ${accessible.length} accessible, ${restricted.length} restricted`);
+  
+  return accessible;
 }
 
 /**
- * Enhanced daily snapshot - now for ALL accessible reports
+ * Export all accessible reports - no date filters, just raw data
  */
-function createDailySnapshotAllReports() {
+function exportAllReportsRaw() {
   const props = PropertiesService.getScriptProperties();
   const SID   = props.getProperty('IMPACT_SID');
   const TOKEN = props.getProperty('IMPACT_TOKEN');
-  
-  const startDate = new Date('2025-07-01T00:00:00Z');
-  const endDate = new Date();
-  const start = startDate.toISOString();
-  const end = endDate.toISOString();
-  
   const basicAuth = Utilities.base64Encode(`${SID}:${TOKEN}`);
   
-  // Get all accessible reports
-  const reports = getAllAvailableReports();
-  console.log(`Scheduling snapshots for ${reports.length} reports...`);
+  const accessibleReports = discoverAllReports();
+  
+  console.log(`\nEXPORTING: Starting exports for ${accessibleReports.length} reports`);
   
   const scheduledJobs = {};
-  const failedReports = [];
+  const exportErrors = [];
   
-  reports.forEach((report, index) => {
+  accessibleReports.forEach((report, index) => {
+    console.log(`\n${index + 1}/${accessibleReports.length}: Exporting ${report.Id}...`);
+    
     try {
-      const url = `https://api.impact.com/Mediapartners/${SID}/ReportExport/${report.id}` +
-                  `?startTime=${encodeURIComponent(start)}` +
-                  `&endTime=${encodeURIComponent(end)}` +
-                  `&subid=mula`;
-                  
+      // Minimal parameters - just the report and subid
+      const url = `https://api.impact.com/Mediapartners/${SID}/ReportExport/${report.Id}?subid=mula`;
+      
       const res = UrlFetchApp.fetch(url, {
         headers: {
           Authorization: `Basic ${basicAuth}`,
@@ -66,69 +74,87 @@ function createDailySnapshotAllReports() {
         muteHttpExceptions: true
       });
       
+      console.log(`Response: ${res.getResponseCode()}`);
+      
       if (res.getResponseCode() === 200) {
         const job = JSON.parse(res.getContentText());
         const jobId = job.QueuedUri.match(/\/Jobs\/([^/]+)/)[1];
         
-        scheduledJobs[report.id] = {
+        scheduledJobs[report.Id] = {
           jobId: jobId,
-          reportName: report.name
+          name: report.Name || report.Id,
+          status: 'scheduled'
         };
         
-        console.log(`✓ ${report.id}: ${jobId}`);
+        console.log(`✓ Scheduled: ${jobId}`);
       } else {
-        console.log(`✗ ${report.id}: ${res.getResponseCode()}`);
-        failedReports.push(report.id);
+        const errorMsg = res.getContentText();
+        console.log(`✗ Failed: ${errorMsg}`);
+        exportErrors.push({
+          reportId: report.Id,
+          error: errorMsg
+        });
       }
+      
     } catch (error) {
-      console.log(`✗ ${report.id}: ${error.message}`);
-      failedReports.push(report.id);
+      console.log(`✗ Error: ${error.message}`);
+      exportErrors.push({
+        reportId: report.Id,
+        error: error.message
+      });
     }
     
-    // Don't overwhelm the API
-    if (index < reports.length - 1) {
+    // Rate limiting
+    if (index < accessibleReports.length - 1) {
       Utilities.sleep(2000);
     }
   });
   
-  // Store all job IDs
-  props.setProperty('ALL_SNAPSHOT_JOBS', JSON.stringify(scheduledJobs));
-  props.setProperty('SNAPSHOT_DATE', new Date().toISOString());
-  props.setProperty('FAILED_REPORTS', JSON.stringify(failedReports));
+  props.setProperty('DISCOVERY_JOBS', JSON.stringify(scheduledJobs));
+  props.setProperty('DISCOVERY_ERRORS', JSON.stringify(exportErrors));
   
-  Logger.log(`Scheduled ${Object.keys(scheduledJobs).length} report snapshots`);
-  return scheduledJobs;
+  Logger.log(`Export scheduling complete: ${Object.keys(scheduledJobs).length} scheduled, ${exportErrors.length} failed`);
+  
+  return {
+    scheduled: scheduledJobs,
+    errors: exportErrors
+  };
 }
 
 /**
- * Fetch all report snapshots and update tracking
+ * Fetch all scheduled exports and create discovery spreadsheet
  */
-function fetchAllSnapshotsAndUpdate() {
+function fetchAllDiscoveryData() {
   const props = PropertiesService.getScriptProperties();
   const SID   = props.getProperty('IMPACT_SID');
   const TOKEN = props.getProperty('IMPACT_TOKEN');
   const basic = Utilities.base64Encode(`${SID}:${TOKEN}`);
   
-  const scheduledJobsJson = props.getProperty('ALL_SNAPSHOT_JOBS');
-  const snapshotDate = props.getProperty('SNAPSHOT_DATE');
-  
-  if (!scheduledJobsJson) {
-    throw new Error('No scheduled jobs. Run createDailySnapshotAllReports() first.');
+  const jobsJson = props.getProperty('DISCOVERY_JOBS');
+  if (!jobsJson) {
+    throw new Error('No discovery jobs found. Run exportAllReportsRaw() first.');
   }
   
-  const scheduledJobs = JSON.parse(scheduledJobsJson);
-  const reportIds = Object.keys(scheduledJobs);
+  const jobs = JSON.parse(jobsJson);
+  const reportIds = Object.keys(jobs);
   
-  console.log(`Fetching ${reportIds.length} scheduled report snapshots...`);
+  console.log(`\nFETCHING: Processing ${reportIds.length} export jobs...`);
   
   const ss = SpreadsheetApp.openById('1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY');
-  const today = new Date(snapshotDate).toLocaleDateString();
   
-  const completedReports = [];
-  const failedFetches = [];
+  // Clear all existing sheets
+  const sheets = ss.getSheets();
+  sheets.forEach((sheet, index) => {
+    if (index > 0) { // Keep the first sheet
+      ss.deleteSheet(sheet);
+    }
+  });
+  
+  const discoveryResults = [];
+  const fetchErrors = [];
   
   reportIds.forEach((reportId, index) => {
-    const jobInfo = scheduledJobs[reportId];
+    const jobInfo = jobs[reportId];
     console.log(`\n${index + 1}/${reportIds.length}: Fetching ${reportId}...`);
     
     try {
@@ -136,15 +162,15 @@ function fetchAllSnapshotsAndUpdate() {
       let status, downloadUrl;
       
       // Poll for completion
-      for (let i = 0; i < 15; i++) {
-        Utilities.sleep(8000);
+      for (let i = 0; i < 12; i++) {
+        Utilities.sleep(10000);
         const res = UrlFetchApp.fetch(jobUrl, {
           headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
           muteHttpExceptions: true
         });
         
         if (res.getResponseCode() !== 200) {
-          throw new Error(`Job check failed: ${res.getContentText()}`);
+          throw new Error(`Job status failed: ${res.getContentText()}`);
         }
         
         const info = JSON.parse(res.getContentText());
@@ -154,182 +180,170 @@ function fetchAllSnapshotsAndUpdate() {
           downloadUrl = 'https://api.impact.com' + info.ResultUri;
           break;
         } else if (status === 'failed') {
-          throw new Error(`Job failed`);
+          throw new Error('Job failed');
         }
         
         console.log(`  Poll ${i+1}: ${status}`);
       }
       
       if (status !== 'completed') {
-        throw new Error(`Not ready after polling`);
+        throw new Error(`Timeout: ${status}`);
       }
       
-      // Download CSV
+      // Download the data
       const csvResponse = UrlFetchApp.fetch(downloadUrl, { 
         headers: { Authorization: `Basic ${basic}` } 
       });
       const csv = Utilities.parseCsv(csvResponse.getContentText());
       
       if (!csv || csv.length === 0) {
-        throw new Error('No data received');
+        throw new Error('No data returned');
       }
       
-      // Create or update tracking sheet for this report
-      const sheetName = `Daily_${reportId.substring(0, 25)}`;
-      let trackingSheet = ss.getSheetByName(sheetName);
+      // Create sheet for this report
+      const sheetName = reportId.length > 25 ? reportId.substring(0, 25) : reportId;
+      const sheet = ss.insertSheet(sheetName);
       
-      if (!trackingSheet) {
-        trackingSheet = ss.insertSheet(sheetName);
-        
-        // Set up headers
-        const trackingHeaders = ['Snapshot_Date', ...csv[0]];
-        trackingSheet.getRange(1, 1, 1, trackingHeaders.length).setValues([trackingHeaders]);
-        
-        // Format header
-        const headerRange = trackingSheet.getRange(1, 1, 1, trackingHeaders.length);
+      // Import all the data
+      sheet.getRange(1, 1, csv.length, csv[0].length).setValues(csv);
+      
+      // Format header row
+      if (csv.length > 0) {
+        const headerRange = sheet.getRange(1, 1, 1, csv[0].length);
         headerRange.setFontWeight('bold');
-        headerRange.setBackground('#e3f2fd');
-        headerRange.setFontColor('#0277bd');
-        trackingSheet.setFrozenRows(1);
+        headerRange.setBackground('#e8f5e8');
+        headerRange.setFontColor('#2e7d32');
+        sheet.setFrozenRows(1);
         
-        // Add metadata
-        trackingSheet.getRange('A1').setNote(
-          `Daily tracking for: ${reportId}\n` +
-          `Report name: ${jobInfo.reportName}\n` +
-          `Each row represents one day's cumulative data`
+        // Add note with discovery info
+        sheet.getRange('A1').setNote(
+          `DISCOVERY REPORT\n` +
+          `Report ID: ${reportId}\n` +
+          `Report Name: ${jobInfo.name}\n` +
+          `Data Rows: ${csv.length - 1}\n` +
+          `Columns: ${csv[0].length}\n` +
+          `Headers: ${csv[0].join(', ')}\n` +
+          `Fetched: ${new Date().toLocaleString()}`
         );
       }
       
-      // Add today's data
-      const lastRow = trackingSheet.getLastRow();
-      for (let i = 1; i < csv.length; i++) {
-        const rowData = [today, ...csv[i]];
-        trackingSheet.getRange(lastRow + i, 1, 1, rowData.length).setValues([rowData]);
-      }
-      
-      completedReports.push({
+      discoveryResults.push({
         reportId: reportId,
-        reportName: jobInfo.reportName,
+        reportName: jobInfo.name,
         sheetName: sheetName,
-        rowsAdded: csv.length - 1
+        rows: csv.length - 1,
+        columns: csv[0].length,
+        headers: csv[0],
+        sampleData: csv.length > 1 ? csv[1] : []
       });
       
-      console.log(`✓ ${reportId}: ${csv.length - 1} rows added to ${sheetName}`);
+      console.log(`✓ ${reportId}: ${csv.length - 1} rows, ${csv[0].length} columns imported`);
       
     } catch (error) {
       console.log(`✗ ${reportId}: ${error.message}`);
-      failedFetches.push({
+      fetchErrors.push({
         reportId: reportId,
         error: error.message
       });
     }
   });
   
-  // Update or create summary sheet
-  let summarySheet = ss.getSheetByName('Daily Summary');
-  if (!summarySheet) {
-    summarySheet = ss.insertSheet('Daily Summary', 0); // Insert as first sheet
-  }
+  // Create discovery summary sheet
+  const summarySheet = ss.getSheets()[0];
+  summarySheet.setName('DISCOVERY SUMMARY');
+  summarySheet.clear();
   
-  // Create/update summary
+  // Build comprehensive summary
   const summaryData = [
-    ['Date', 'Report ID', 'Report Name', 'Sheet Name', 'Rows Added', 'Status'],
-    ...completedReports.map(r => [today, r.reportId, r.reportName, r.sheetName, r.rowsAdded, 'Success']),
-    ...failedFetches.map(f => [today, f.reportId, 'N/A', 'N/A', 0, f.error])
+    ['Report ID', 'Report Name', 'Sheet Name', 'Rows', 'Columns', 'Key Headers', 'Status']
   ];
   
-  // If this is the first run, clear and add headers
-  if (summarySheet.getLastRow() === 0) {
-    summarySheet.getRange(1, 1, summaryData.length, summaryData[0].length).setValues(summaryData);
-    
-    // Format header
-    const headerRange = summarySheet.getRange(1, 1, 1, summaryData[0].length);
-    headerRange.setFontWeight('bold');
-    headerRange.setBackground('#fff3e0');
-    headerRange.setFontColor('#e65100');
-    summarySheet.setFrozenRows(1);
-  } else {
-    // Append today's results (skip header)
-    const dataToAdd = summaryData.slice(1);
-    const nextRow = summarySheet.getLastRow() + 1;
-    summarySheet.getRange(nextRow, 1, dataToAdd.length, dataToAdd[0].length).setValues(dataToAdd);
-  }
+  discoveryResults.forEach(result => {
+    const keyHeaders = result.headers.slice(0, 5).join(', ') + (result.headers.length > 5 ? '...' : '');
+    summaryData.push([
+      result.reportId,
+      result.reportName,
+      result.sheetName,
+      result.rows,
+      result.columns,
+      keyHeaders,
+      'SUCCESS'
+    ]);
+  });
   
-  Logger.log(`All snapshots complete: ${completedReports.length} successful, ${failedFetches.length} failed`);
+  fetchErrors.forEach(error => {
+    summaryData.push([
+      error.reportId,
+      'N/A',
+      'N/A',
+      0,
+      0,
+      'N/A',
+      error.error
+    ]);
+  });
+  
+  summarySheet.getRange(1, 1, summaryData.length, summaryData[0].length).setValues(summaryData);
+  
+  // Format summary
+  const headerRange = summarySheet.getRange(1, 1, 1, summaryData[0].length);
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#fff3e0');
+  headerRange.setFontColor('#e65100');
+  summarySheet.setFrozenRows(1);
+  summarySheet.autoResizeColumns(1, summaryData[0].length);
+  
+  Logger.log(`🎉 DISCOVERY COMPLETE!`);
+  Logger.log(`✓ ${discoveryResults.length} reports successfully imported`);
+  Logger.log(`✗ ${fetchErrors.length} reports failed`);
+  Logger.log(`📊 Total sheets: ${discoveryResults.length + 1}`);
   
   return {
-    completed: completedReports,
-    failed: failedFetches,
-    snapshotDate: today,
+    successful: discoveryResults,
+    failed: fetchErrors,
+    totalSheets: discoveryResults.length + 1,
     sheetUrl: ss.getUrl()
   };
 }
 
 /**
- * Enhanced one-click daily update for ALL reports
+ * Complete discovery process - one click to see everything
  */
-function runDailyUpdateAllReports() {
+function runCompleteDiscovery() {
   try {
-    Logger.log('Starting daily snapshot update for ALL accessible reports...');
+    Logger.log('🔍 Starting complete Impact.com data discovery...');
     
-    const scheduledJobs = createDailySnapshotAllReports();
-    Logger.log(`Scheduled ${Object.keys(scheduledJobs).length} report jobs`);
+    // Step 1: Export all reports
+    const exportResults = exportAllReportsRaw();
+    Logger.log(`📤 Export phase: ${Object.keys(exportResults.scheduled).length} scheduled, ${exportResults.errors.length} failed`);
     
-    // Wait for jobs to process
-    Logger.log('Waiting for exports to process...');
-    Utilities.sleep(20000);
+    if (Object.keys(exportResults.scheduled).length === 0) {
+      throw new Error('No reports were successfully scheduled for export');
+    }
     
-    const result = fetchAllSnapshotsAndUpdate();
+    // Step 2: Wait for processing
+    Logger.log('⏳ Waiting for exports to process...');
+    Utilities.sleep(30000); // 30 seconds
     
-    Logger.log(`🎉 Daily update for ALL reports completed!`);
-    Logger.log(`✓ ${result.completed.length} reports updated successfully`);
-    Logger.log(`✗ ${result.failed.length} reports failed`);
-    Logger.log(`📅 Snapshot date: ${result.snapshotDate}`);
-    Logger.log(`🔗 Sheet: ${result.sheetUrl}`);
+    // Step 3: Fetch all the data
+    const results = fetchAllDiscoveryData();
     
-    return result;
+    Logger.log(`🎉 DISCOVERY MISSION COMPLETE!`);
+    Logger.log(`📋 Reports discovered and imported: ${results.successful.length}`);
+    Logger.log(`❌ Reports that failed: ${results.failed.length}`);
+    Logger.log(`📊 Total data sheets created: ${results.totalSheets - 1}`);
+    Logger.log(`🔗 View your discovery: ${results.sheetUrl}`);
+    
+    // Log what we found
+    console.log('\n=== DISCOVERY FINDINGS ===');
+    results.successful.forEach(result => {
+      console.log(`${result.reportId}: ${result.rows} rows, headers: ${result.headers.join(', ')}`);
+    });
+    
+    return results;
     
   } catch (error) {
-    Logger.log(`❌ Daily update error: ${error.message}`);
+    Logger.log(`❌ Discovery failed: ${error.message}`);
     throw error;
   }
-}
-
-/**
- * Set up automatic daily triggers for all reports
- */
-function setupDailyTriggerAllReports() {
-  // Delete existing triggers
-  const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'runDailyUpdateAllReports') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-  
-  // Create new daily trigger at 9 AM
-  ScriptApp.newTrigger('runDailyUpdateAllReports')
-    .timeBased()
-    .everyDays(1)
-    .atHour(9)
-    .create();
-    
-  Logger.log('Set up daily trigger for ALL reports at 9 AM');
-}
-
-// Keep your original single-report functions too
-function createDailySnapshot() {
-  // ... your existing code stays the same
-}
-
-function fetchAndAppendSnapshot() {
-  // ... your existing code stays the same  
-}
-
-function runDailyUpdate() {
-  // ... your existing code stays the same
-}
-
-function setupDailyTrigger() {
-  // ... your existing code stays the same
 }
