@@ -1,0 +1,153 @@
+# Cursor Rules for Memory Bank Project
+
+## Project Overview
+This is a memory bank system for managing and storing project context, knowledge, and important information. The system should be maintainable, extensible, and user-friendly.
+
+## Code Style Guidelines
+
+### JavaScript/Node.js
+- Use ES6+ features and modern JavaScript syntax
+- Prefer `const` and `let` over `var`
+- Use arrow functions for callbacks and short functions
+- Use template literals for string interpolation
+- Use destructuring for object/array assignments
+- Use async/await over Promises when possible
+- Use meaningful variable and function names
+- Add JSDoc comments for all public methods
+- Use semicolons consistently
+- Use 2 spaces for indentation
+
+### File Organization
+- Keep related functionality in the same file
+- Use descriptive file names with kebab-case
+- Separate concerns into different modules
+- Keep files under 300 lines when possible
+- Use index.js files for module exports
+
+### Error Handling
+- Always handle errors gracefully
+- Use try-catch blocks for async operations
+- Provide meaningful error messages
+- Log errors appropriately
+- Don't let errors crash the application
+
+### Testing
+- Write unit tests for all public methods
+- Use descriptive test names
+- Test edge cases and error conditions
+- Aim for high test coverage
+- Use mocks for external dependencies
+
+## Memory Bank Specific Rules
+
+### Memory Storage
+- Always validate input before storing memories
+- Use unique IDs for all memories
+- Include proper metadata (category, tags, priority)
+- Set appropriate expiration dates when needed
+- Handle memory conflicts gracefully
+
+### Search and Retrieval
+- Implement efficient search algorithms
+- Support multiple search criteria
+- Return results in a consistent format
+- Handle empty results gracefully
+- Optimize for performance
+
+### Data Persistence
+- Support both JSON import/export
+- Handle data migration between versions
+- Validate imported data
+- Provide backup and restore functionality
+- Handle file I/O errors
+
+### Security and Privacy
+- Sanitize user input
+- Don't store sensitive information in plain text
+- Implement proper access controls
+- Log security-relevant events
+- Handle data breaches gracefully
+
+## Performance Guidelines
+- Use efficient data structures (Map, Set)
+- Implement pagination for large result sets
+- Cache frequently accessed data
+- Clean up expired memories regularly
+- Monitor memory usage
+- Optimize search algorithms
+
+## Documentation Requirements
+- Maintain up-to-date README
+- Document all public APIs
+- Include usage examples
+- Document configuration options
+- Keep changelog updated
+
+## Git Workflow
+- Use descriptive commit messages
+- Create feature branches for new functionality
+- Write meaningful pull request descriptions
+- Review code before merging
+- Keep main branch stable
+
+## Dependencies
+- Minimize external dependencies
+- Use well-maintained packages
+- Keep dependencies up to date
+- Document why each dependency is needed
+- Use exact versions in production
+
+## Code Review Checklist
+- [ ] Code follows style guidelines
+- [ ] All tests pass
+- [ ] Error handling is appropriate
+- [ ] Performance is acceptable
+- [ ] Documentation is updated
+- [ ] Security considerations addressed
+- [ ] Memory usage is reasonable
+- [ ] Code is maintainable
+
+## Common Patterns
+
+### Memory Creation
+```javascript
+const memory = memoryBank.store(
+  'unique-id',
+  { key: 'value' },
+  'category',
+  ['tag1', 'tag2'],
+  8,
+  new Date('2024-12-31')
+);
+```
+
+### Memory Search
+```javascript
+const results = memoryBank.search({
+  category: 'project',
+  tags: ['important'],
+  minPriority: 7,
+  text: 'search term'
+});
+```
+
+### Error Handling
+```javascript
+try {
+  const result = await someAsyncOperation();
+  return result;
+} catch (error) {
+  console.error('Operation failed:', error.message);
+  throw new Error('Failed to complete operation');
+}
+```
+
+## Anti-Patterns to Avoid
+- Don't store large objects in memory without limits
+- Don't use synchronous operations for I/O
+- Don't ignore error conditions
+- Don't hardcode configuration values
+- Don't create memory leaks
+- Don't use deprecated APIs
+- Don't skip input validation
+- Don't expose internal implementation details
