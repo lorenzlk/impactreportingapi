@@ -450,9 +450,9 @@ function setupWithTestValues() {
   console.log('Setting up with test values...');
   
   // EDIT THESE VALUES WITH YOUR ACTUAL CREDENTIALS
-  const SID = 'IRVS6cDH8DnE3783091LoyPwNc8YkkMTF1';
-  const TOKEN = 'CrH~iNtpeA5dygjPdnSaXFAxKAtp~F4w';
-  const SPREADSHEET_ID = '1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY'; // Optional
+  const SID = 'YOUR_ACTUAL_SID_HERE';
+  const TOKEN = 'YOUR_ACTUAL_TOKEN_HERE';
+  const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE'; // Optional
   
   if (SID === 'YOUR_ACTUAL_SID_HERE' || TOKEN === 'YOUR_ACTUAL_TOKEN_HERE') {
     console.log('❌ Please edit the SID and TOKEN values in the setupWithTestValues() function first');

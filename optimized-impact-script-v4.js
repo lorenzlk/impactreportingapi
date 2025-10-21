@@ -70,9 +70,9 @@ class ImpactConfig {
       yieldInterval: 1000, // 1 second
       
       // Credentials (Update these with your actual values)
-      impactSid: 'IRVS6cDH8DnE3783091LoyPwNc8YkkMTF1',
-      impactToken: 'CrH~iNtpeA5dygjPdnSaXFAxKAtp~F4w',
-      spreadsheetId: '1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY',
+      impactSid: 'YOUR_IMPACT_SID_HERE',
+      impactToken: 'YOUR_IMPACT_TOKEN_HERE',
+      spreadsheetId: 'YOUR_SPREADSHEET_ID_HERE',
       
       // Notifications
       enableEmailNotifications: false,
