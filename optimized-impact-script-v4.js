@@ -69,10 +69,10 @@ class ImpactConfig {
       checkpointInterval: 2 * 60 * 1000, // 2 minutes
       yieldInterval: 1000, // 1 second
       
-      // Credentials (Update these with your actual values)
-      impactSid: 'YOUR_IMPACT_SID_HERE',
-      impactToken: 'YOUR_IMPACT_TOKEN_HERE',
-      spreadsheetId: 'YOUR_SPREADSHEET_ID_HERE',
+      // Credentials (Loaded from Script Properties for security)
+      impactSid: this.getSecureCredential('IMPACT_SID'),
+      impactToken: this.getSecureCredential('IMPACT_TOKEN'),
+      spreadsheetId: this.getSecureCredential('IMPACT_SPREADSHEET_ID'),
       
       // Notifications
       enableEmailNotifications: false,
@@ -109,6 +109,17 @@ class ImpactConfig {
 
   saveConfiguration() {
     this.props.setProperty('IMPACT_OPTIMIZED_CONFIG', JSON.stringify(this.config));
+  }
+
+  /**
+   * Get secure credential from Script Properties
+   */
+  getSecureCredential(propertyName) {
+    const value = this.props.getProperty(propertyName);
+    if (!value) {
+      throw new Error(`Credential ${propertyName} not found. Run quickSetupWithCredentials() first.`);
+    }
+    return value;
   }
 
   validate() {
