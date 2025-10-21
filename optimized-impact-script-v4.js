@@ -1473,6 +1473,173 @@ class UltraOptimizedOrchestrator {
 }
 
 // ============================================================================
+// SECURITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Security audit - check for exposed credentials
+ */
+function securityAudit() {
+  console.log('Running security audit...');
+  
+  const issues = [];
+  
+  // Check Script Properties for placeholder values
+  const props = PropertiesService.getScriptProperties();
+  const sid = props.getProperty('IMPACT_SID');
+  const token = props.getProperty('IMPACT_TOKEN');
+  
+  if (sid === 'YOUR_IMPACT_SID_HERE' || sid === 'YOUR_SID_HERE') {
+    issues.push('SID contains placeholder value');
+  }
+  
+  if (token === 'YOUR_IMPACT_TOKEN_HERE' || token === 'YOUR_TOKEN_HERE') {
+    issues.push('Token contains placeholder value');
+  }
+  
+  if (issues.length === 0) {
+    console.log('✅ Security audit passed - no issues found');
+  } else {
+    console.log('❌ Security issues found:');
+    issues.forEach(issue => console.log('  - ' + issue));
+  }
+  
+  return issues.length === 0;
+}
+
+/**
+ * Validate credentials are properly configured
+ */
+function validateCredentials() {
+  const props = PropertiesService.getScriptProperties();
+  
+  const sid = props.getProperty('IMPACT_SID');
+  const token = props.getProperty('IMPACT_TOKEN');
+  
+  if (!sid || !token) {
+    console.log('❌ Credentials not found in Script Properties');
+    console.log('Run setupSecureCredentials() first');
+    return false;
+  }
+  
+  if (sid === 'YOUR_IMPACT_SID_HERE' || token === 'YOUR_IMPACT_TOKEN_HERE') {
+    console.log('❌ Default placeholder values detected');
+    console.log('Please update with your actual credentials');
+    return false;
+  }
+  
+  console.log('✅ Credentials found and validated');
+  console.log('SID: ' + sid.substring(0, 8) + '...');
+  console.log('Token: ' + token.substring(0, 8) + '...');
+  
+  return true;
+}
+
+/**
+ * Test API connection with secure credentials
+ */
+function testSecureConnection() {
+  console.log('Testing secure API connection...');
+  
+  if (!validateCredentials()) {
+    return false;
+  }
+  
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const sid = props.getProperty('IMPACT_SID');
+    const token = props.getProperty('IMPACT_TOKEN');
+    
+    const url = `https://api.impact.com/Mediapartners/${sid}/Reports`;
+    const basicAuth = Utilities.base64Encode(`${sid}:${token}`);
+    
+    const response = UrlFetchApp.fetch(url, {
+      headers: {
+        'Authorization': `Basic ${basicAuth}`,
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+    
+    if (response.getResponseCode() === 200) {
+      console.log('✅ API connection successful');
+      const data = JSON.parse(response.getContentText());
+      console.log('Found ' + (data.Reports ? data.Reports.length : 0) + ' reports');
+      return true;
+    } else {
+      console.log('❌ API connection failed: ' + response.getResponseCode());
+      return false;
+    }
+    
+  } catch (error) {
+    console.log('❌ API connection error: ' + error.message);
+    return false;
+  }
+}
+
+/**
+ * Setup secure credentials with your actual values
+ * Replace the values below with your real credentials
+ */
+function setupSecureCredentials() {
+  console.log('Setting up secure credentials...');
+  
+  // REPLACE THESE WITH YOUR ACTUAL CREDENTIALS
+  const sid = 'YOUR_ACTUAL_SID_HERE';  // Replace with your real SID
+  const token = 'YOUR_ACTUAL_TOKEN_HERE';  // Replace with your real Token
+  const spreadsheetId = 'YOUR_SPREADSHEET_ID_HERE';  // Replace with your Spreadsheet ID (optional)
+  
+  if (sid === 'YOUR_ACTUAL_SID_HERE' || token === 'YOUR_ACTUAL_TOKEN_HERE') {
+    console.log('❌ Please update the credentials in setupSecureCredentials() function');
+    console.log('Replace YOUR_ACTUAL_SID_HERE and YOUR_ACTUAL_TOKEN_HERE with your real values');
+    console.log('Then run this function again');
+    return false;
+  }
+  
+  const props = PropertiesService.getScriptProperties();
+  
+  // Store credentials securely in Script Properties
+  props.setProperty('IMPACT_SID', sid);
+  props.setProperty('IMPACT_TOKEN', token);
+  
+  if (spreadsheetId && spreadsheetId !== 'YOUR_SPREADSHEET_ID_HERE' && spreadsheetId.trim() !== '') {
+    props.setProperty('IMPACT_SPREADSHEET_ID', spreadsheetId);
+  }
+  
+  console.log('✅ Credentials stored securely in Script Properties');
+  console.log('SID: ' + sid.substring(0, 8) + '...');
+  console.log('Token: ' + token.substring(0, 8) + '...');
+  
+  return true;
+}
+
+/**
+ * Quick setup with your known credentials
+ * Use this function with your actual values
+ */
+function quickSetupWithCredentials() {
+  console.log('Quick setup with credentials...');
+  
+  // EDIT THESE VALUES WITH YOUR ACTUAL CREDENTIALS
+  const sid = 'IRVS6cDH8DnE3783091LoyPwNc8YkkMTF1';  // Your SID
+  const token = 'CrH~iNtpeA5dygjPdnSaXFAxKAtp~F4w';  // Your Token
+  const spreadsheetId = '1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY';  // Your Spreadsheet ID
+  
+  const props = PropertiesService.getScriptProperties();
+  
+  // Store credentials securely in Script Properties
+  props.setProperty('IMPACT_SID', sid);
+  props.setProperty('IMPACT_TOKEN', token);
+  props.setProperty('IMPACT_SPREADSHEET_ID', spreadsheetId);
+  
+  console.log('✅ Credentials stored securely in Script Properties');
+  console.log('SID: ' + sid.substring(0, 8) + '...');
+  console.log('Token: ' + token.substring(0, 8) + '...');
+  
+  return true;
+}
+
+// ============================================================================
 // PUBLIC API FUNCTIONS
 // ============================================================================
 
