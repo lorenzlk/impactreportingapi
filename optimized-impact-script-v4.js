@@ -69,6 +69,11 @@ class ImpactConfig {
       checkpointInterval: 2 * 60 * 1000, // 2 minutes
       yieldInterval: 1000, // 1 second
       
+      // Data Freshness Management
+      dataFreshnessHours: 24, // Hours before data is considered stale
+      forceRefresh: false, // Force refresh all data regardless of freshness
+      enableDataFreshness: true, // Enable freshness checking
+      
       // Credentials (Loaded from Script Properties for security)
       impactSid: this.getSecureCredential('IMPACT_SID'),
       impactToken: this.getSecureCredential('IMPACT_TOKEN'),
@@ -815,7 +820,30 @@ class EnhancedSpreadsheetManager {
   createSingleSheet(reportId, reportData, metadata, spreadsheet) {
     const sheetName = this.generateSheetName(reportId, metadata.name);
     
-    // Delete existing sheet if it exists
+    // Check if we need to refresh this data
+    const shouldRefresh = this.shouldRefreshData(reportId, metadata, spreadsheet);
+    
+    if (!shouldRefresh) {
+      this.logger.info('Skipping ' + reportId + ' - data is fresh', {
+        reportId: reportId,
+        lastUpdated: metadata.lastUpdated
+      });
+      
+      // Return existing sheet info without recreating
+      const existingSheet = spreadsheet.getSheetByName(sheetName);
+      if (existingSheet) {
+        return {
+          sheetName: sheetName,
+          rowCount: existingSheet.getLastRow() - 1,
+          columnCount: existingSheet.getLastColumn(),
+          chunked: false,
+          skipped: true,
+          reason: 'Data is fresh'
+        };
+      }
+    }
+    
+    // Delete existing sheet if it exists and we're refreshing
     const existingSheet = spreadsheet.getSheetByName(sheetName);
     if (existingSheet) {
       spreadsheet.deleteSheet(existingSheet);
@@ -831,12 +859,16 @@ class EnhancedSpreadsheetManager {
     
     // Add metadata
     this.addMetadataNote(sheet, reportId, metadata, reportData);
+    
+    // Store data freshness info
+    this.storeDataFreshness(reportId, metadata);
 
     return {
       sheetName: sheetName,
       rowCount: reportData.rowCount,
       columnCount: reportData.columnCount,
-      chunked: false
+      chunked: false,
+      refreshed: true
     };
   }
 
@@ -1100,6 +1132,174 @@ class EnhancedSpreadsheetManager {
   yieldExecution() {
     // Yield execution to prevent timeout
     Utilities.sleep(this.config.get('yieldInterval', 1000));
+  }
+
+  /**
+   * Check if data should be refreshed based on freshness rules
+   */
+  shouldRefreshData(reportId, metadata, spreadsheet) {
+    const freshnessHours = this.config.get('dataFreshnessHours', 24); // Default 24 hours
+    const forceRefresh = this.config.get('forceRefresh', false);
+    
+    if (forceRefresh) {
+      this.logger.info('Force refresh enabled for ' + reportId);
+      return true;
+    }
+    
+    // Check if we have freshness data for this report
+    const freshnessData = this.getDataFreshness(reportId);
+    if (!freshnessData) {
+      this.logger.info('No freshness data for ' + reportId + ' - will refresh');
+      return true;
+    }
+    
+    const lastUpdated = new Date(freshnessData.lastUpdated);
+    const now = new Date();
+    const hoursSinceUpdate = (now - lastUpdated) / (1000 * 60 * 60);
+    
+    if (hoursSinceUpdate >= freshnessHours) {
+      this.logger.info('Data is stale for ' + reportId, {
+        hoursSinceUpdate: hoursSinceUpdate.toFixed(1),
+        freshnessThreshold: freshnessHours
+      });
+      return true;
+    }
+    
+    this.logger.info('Data is fresh for ' + reportId, {
+      hoursSinceUpdate: hoursSinceUpdate.toFixed(1),
+      freshnessThreshold: freshnessHours
+    });
+    return false;
+  }
+
+  /**
+   * Store data freshness information
+   */
+  storeDataFreshness(reportId, metadata) {
+    const freshnessData = {
+      reportId: reportId,
+      lastUpdated: new Date().toISOString(),
+      reportName: metadata.name,
+      dataHash: this.calculateDataHash(metadata),
+      rowCount: metadata.rowCount || 0
+    };
+    
+    const props = PropertiesService.getScriptProperties();
+    const existingData = props.getProperty('IMPACT_DATA_FRESHNESS');
+    let freshnessMap = {};
+    
+    if (existingData) {
+      try {
+        freshnessMap = JSON.parse(existingData);
+      } catch (error) {
+        this.logger.warn('Failed to parse existing freshness data');
+      }
+    }
+    
+    freshnessMap[reportId] = freshnessData;
+    props.setProperty('IMPACT_DATA_FRESHNESS', JSON.stringify(freshnessMap));
+    
+    this.logger.info('Stored freshness data for ' + reportId, {
+      lastUpdated: freshnessData.lastUpdated,
+      rowCount: freshnessData.rowCount
+    });
+  }
+
+  /**
+   * Get data freshness information for a report
+   */
+  getDataFreshness(reportId) {
+    const props = PropertiesService.getScriptProperties();
+    const existingData = props.getProperty('IMPACT_DATA_FRESHNESS');
+    
+    if (!existingData) {
+      return null;
+    }
+    
+    try {
+      const freshnessMap = JSON.parse(existingData);
+      return freshnessMap[reportId] || null;
+    } catch (error) {
+      this.logger.warn('Failed to parse freshness data');
+      return null;
+    }
+  }
+
+  /**
+   * Calculate a simple hash for data comparison
+   */
+  calculateDataHash(metadata) {
+    const hashData = {
+      reportId: metadata.reportId,
+      reportName: metadata.name,
+      rowCount: metadata.rowCount,
+      columnCount: metadata.columnCount,
+      timestamp: new Date().toISOString().split('T')[0] // Date only for daily comparison
+    };
+    
+    return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, 
+      JSON.stringify(hashData), 
+      Utilities.Charset.UTF_8
+    ).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /**
+   * Clear all freshness data (useful for full refresh)
+   */
+  clearDataFreshness() {
+    const props = PropertiesService.getScriptProperties();
+    props.deleteProperty('IMPACT_DATA_FRESHNESS');
+    this.logger.info('Cleared all data freshness information');
+  }
+
+  /**
+   * Get freshness summary for all reports
+   */
+  getFreshnessSummary() {
+    const props = PropertiesService.getScriptProperties();
+    const existingData = props.getProperty('IMPACT_DATA_FRESHNESS');
+    
+    if (!existingData) {
+      return { totalReports: 0, freshReports: 0, staleReports: 0, reports: [] };
+    }
+    
+    try {
+      const freshnessMap = JSON.parse(existingData);
+      const now = new Date();
+      const freshnessHours = this.config.get('dataFreshnessHours', 24);
+      
+      let freshCount = 0;
+      let staleCount = 0;
+      const reports = [];
+      
+      for (const [reportId, data] of Object.entries(freshnessMap)) {
+        const lastUpdated = new Date(data.lastUpdated);
+        const hoursSinceUpdate = (now - lastUpdated) / (1000 * 60 * 60);
+        const isFresh = hoursSinceUpdate < freshnessHours;
+        
+        if (isFresh) freshCount++;
+        else staleCount++;
+        
+        reports.push({
+          reportId: reportId,
+          reportName: data.reportName,
+          lastUpdated: data.lastUpdated,
+          hoursSinceUpdate: hoursSinceUpdate.toFixed(1),
+          isFresh: isFresh,
+          rowCount: data.rowCount
+        });
+      }
+      
+      return {
+        totalReports: Object.keys(freshnessMap).length,
+        freshReports: freshCount,
+        staleReports: staleCount,
+        reports: reports.sort((a, b) => new Date(b.lastUpdated) - new Date(a.lastUpdated))
+      };
+    } catch (error) {
+      this.logger.error('Failed to parse freshness summary', { error: error.message });
+      return { totalReports: 0, freshReports: 0, staleReports: 0, reports: [] };
+    }
   }
 }
 
@@ -1735,6 +1935,102 @@ function refreshSummarySheet() {
     historicalReports: completedReports.length,
     message: 'Summary sheet refreshed with all historical data'
   };
+}
+
+/**
+ * Check data freshness for all reports
+ */
+function checkDataFreshness() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  const summary = orchestrator.spreadsheetManager.getFreshnessSummary();
+  
+  console.log('Data Freshness Summary:');
+  console.log('Total Reports: ' + summary.totalReports);
+  console.log('Fresh Reports: ' + summary.freshReports);
+  console.log('Stale Reports: ' + summary.staleReports);
+  
+  if (summary.reports.length > 0) {
+    console.log('\nReport Details:');
+    summary.reports.forEach(report => {
+      const status = report.isFresh ? '✅ FRESH' : '⚠️ STALE';
+      console.log(`${status} ${report.reportId} - ${report.hoursSinceUpdate}h ago (${report.rowCount} rows)`);
+    });
+  }
+  
+  return summary;
+}
+
+/**
+ * Force refresh all data (ignore freshness)
+ */
+function forceRefreshAllData() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  
+  // Enable force refresh
+  orchestrator.config.set('forceRefresh', true);
+  
+  console.log('Force refresh enabled - all data will be refreshed');
+  console.log('Run runCompleteDiscovery() to refresh all data');
+  
+  return {
+    message: 'Force refresh enabled',
+    nextStep: 'Run runCompleteDiscovery() to refresh all data'
+  };
+}
+
+/**
+ * Set data freshness threshold (in hours)
+ */
+function setDataFreshnessHours(hours) {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  orchestrator.config.set('dataFreshnessHours', hours);
+  
+  console.log('Data freshness threshold set to ' + hours + ' hours');
+  console.log('Reports older than ' + hours + ' hours will be refreshed');
+  
+  return {
+    message: 'Freshness threshold updated',
+    hours: hours
+  };
+}
+
+/**
+ * Clear all freshness data (useful for full reset)
+ */
+function clearDataFreshness() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  orchestrator.spreadsheetManager.clearDataFreshness();
+  
+  console.log('All data freshness information cleared');
+  console.log('Next run will refresh all data');
+  
+  return {
+    message: 'Freshness data cleared',
+    nextStep: 'Next run will refresh all data'
+  };
+}
+
+/**
+ * Get detailed freshness report
+ */
+function getDetailedFreshnessReport() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  const summary = orchestrator.spreadsheetManager.getFreshnessSummary();
+  
+  const report = {
+    timestamp: new Date().toISOString(),
+    configuration: {
+      freshnessHours: orchestrator.config.get('dataFreshnessHours', 24),
+      forceRefresh: orchestrator.config.get('forceRefresh', false),
+      enableFreshness: orchestrator.config.get('enableDataFreshness', true)
+    },
+    summary: summary
+  };
+  
+  console.log('Detailed Freshness Report:');
+  console.log(JSON.stringify(report, null, 2));
+  
+  return report;
 }
 
 function discoverAllReports() {
