@@ -777,10 +777,11 @@ class EnhancedDataProcessor {
 // ============================================================================
 
 class EnhancedSpreadsheetManager {
-  constructor(config, logger, metrics) {
+  constructor(config, logger, metrics, progressTracker = null) {
     this.config = config;
     this.logger = logger;
     this.metrics = metrics;
+    this.progressTracker = progressTracker;
     this.spreadsheetId = config.getSpreadsheetId();
   }
 
@@ -1315,7 +1316,7 @@ class UltraOptimizedOrchestrator {
     this.progressTracker = new EnhancedProgressTracker(this.config, this.metrics);
     this.apiClient = new EnhancedAPIClient(this.config, this.logger, this.metrics);
     this.dataProcessor = new EnhancedDataProcessor(this.config, this.logger, this.metrics);
-    this.spreadsheetManager = new EnhancedSpreadsheetManager(this.config, this.logger, this.metrics);
+    this.spreadsheetManager = new EnhancedSpreadsheetManager(this.config, this.logger, this.metrics, this.progressTracker);
     
     this.startTime = Date.now();
     this.lastCheckpoint = Date.now();
