@@ -27,7 +27,7 @@ A robust, enterprise-grade solution for discovering and exporting data from the 
 ## 🛠️ Installation
 
 1. **Create a new Google Apps Script project**
-2. **Copy the optimized script** (`optimized-impact-script-v4.js`) into your project
+2. **Copy the main script** (`optimized-impact-script-v4.js`) into your project
 3. **Copy the setup script** (`setup-configuration.js`) into your project
 4. **Run the setup script** to configure your environment:
    ```javascript
@@ -288,6 +288,19 @@ console.log(`Completed: ${progress.completed.length} reports`);
 - `EnhancedDataProcessor`: Data processing
 - `EnhancedSpreadsheetManager`: Spreadsheet operations
 
+## 📁 Project Structure
+
+### **Core Files:**
+- `optimized-impact-script-v4.js` - **Main Impact.com data export script**
+- `business-intelligence-dashboard.js` - **BI dashboard and analytics system**
+- `setup-configuration.js` - **Configuration setup and management**
+- `secure-configuration.js` - **Secure credential management**
+
+### **Documentation:**
+- `README.md` - **Main project documentation**
+- `SECURITY-GUIDE.md` - **Security best practices and setup**
+- `BI-Dashboard-Guide.md` - **Business Intelligence dashboard guide**
+
 ## 🔄 Version History
 
 ### v4.0.0 (Current) - Ultra-Optimized
@@ -297,24 +310,8 @@ console.log(`Completed: ${progress.completed.length} reports`);
 - Advanced progress tracking and resume
 - Memory optimization and timeout prevention
 - Performance metrics and monitoring
-
-### v3.0.0 - Optimized
-- Resume capability and progress tracking
-- Automatic chunking for large reports
-- Better timeout handling
-- Smarter polling
-- Email notifications
-
-### v2.0.0 - Enterprise
-- Configuration management system
-- Advanced error handling and recovery
-- Comprehensive logging and monitoring
-- Data validation and sanitization
-
-### v1.0.0 - Basic
-- Basic discovery and export functionality
-- Simple error handling
-- Fixed configuration
+- **Business Intelligence dashboard system**
+- **Secure credential management**
 
 ## 🤝 Contributing
 
