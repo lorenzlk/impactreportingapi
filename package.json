@@ -1,0 +1,46 @@
+{
+  "name": "memory-bank-system",
+  "version": "1.0.0",
+  "description": "A comprehensive memory management system for storing and retrieving project context",
+  "main": "memory-bank.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "cleanup": "node scripts/cleanup.js"
+  },
+  "keywords": [
+    "memory",
+    "storage",
+    "context",
+    "knowledge-management",
+    "search",
+    "organization"
+  ],
+  "author": "Logan Lorenz",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.1.1"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loganlorenz/memory-bank-system.git"
+  },
+  "bugs": {
+    "url": "https://github.com/loganlorenz/memory-bank-system/issues"
+  },
+  "homepage": "https://github.com/loganlorenz/memory-bank-system#readme"
+}
