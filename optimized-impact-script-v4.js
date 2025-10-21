@@ -978,11 +978,34 @@ class EnhancedSpreadsheetManager {
 
     const summarySheet = spreadsheet.insertSheet('DISCOVERY SUMMARY', 0);
     
+    // Get historical completed reports
+    const completedReports = this.progressTracker.getCompletedReports();
+    this.logger.info('Including historical data', { 
+      currentResults: results.length,
+      currentErrors: errors.length,
+      historicalCompleted: completedReports.length
+    });
+    
     // Build comprehensive summary
     const summaryData = [
       ['Report ID', 'Report Name', 'Sheet Name', 'Rows', 'Columns', 'Status', 'Notes', 'Processed At']
     ];
 
+    // Add historical completed reports first
+    completedReports.forEach(function(completed) {
+      summaryData.push([
+        completed.reportId,
+        completed.reportName || 'N/A',
+        completed.sheetName || 'N/A',
+        completed.rowCount || 0,
+        completed.columnCount || 0,
+        'SUCCESS (Historical)',
+        completed.chunked ? 'Split into ' + completed.chunkCount + ' parts' : '',
+        completed.processedAt ? new Date(completed.processedAt).toLocaleString() : 'N/A'
+      ]);
+    });
+
+    // Add current successful results
     results.forEach(function(result) {
       summaryData.push([
         result.reportId,
@@ -990,43 +1013,65 @@ class EnhancedSpreadsheetManager {
         result.sheetName,
         result.rowCount,
         result.columnCount,
-        'SUCCESS',
+        'SUCCESS (Current)',
         result.chunked ? 'Split into ' + result.chunkCount + ' parts' : '',
         result.processedAt ? result.processedAt.toLocaleString() : 'N/A'
       ]);
     });
 
+    // Add current errors
     errors.forEach(function(error) {
       summaryData.push([
         error.reportId,
-        'N/A',
+        error.reportName || 'N/A',
         'N/A',
         0,
         0,
-        'ERROR',
+        'ERROR (Current)',
         error.error.substring(0, 100),
         'N/A'
       ]);
     });
 
+    // Calculate totals
+    const totalHistorical = completedReports.length;
+    const totalCurrent = results.length + errors.length;
+    const totalSuccessful = totalHistorical + results.length;
+    const totalFailed = errors.length;
+    const totalReports = totalHistorical + totalCurrent;
+    const totalRows = completedReports.reduce((sum, r) => sum + (r.rowCount || 0), 0) + 
+                     results.reduce((sum, r) => sum + r.rowCount, 0);
+
     // Add comprehensive statistics
     summaryData.push(['', '', '', '', '', '', '', '']);
-    summaryData.push(['=== STATISTICS ===', '', '', '', '', '', '', '']);
-    summaryData.push(['Total Reports', results.length + errors.length, '', '', '', '', '', '']);
-    summaryData.push(['Successful', results.length, '', '', '', '', '', '']);
-    summaryData.push(['Failed', errors.length, '', '', '', '', '', '']);
-    summaryData.push(['Success Rate', results.length > 0 ? 
-      ((results.length / (results.length + errors.length)) * 100).toFixed(1) + '%' : '0%', 
+    summaryData.push(['=== COMPREHENSIVE STATISTICS ===', '', '', '', '', '', '', '']);
+    summaryData.push(['Total Reports (All Time)', totalReports, '', '', '', '', '', '']);
+    summaryData.push(['Historical Completed', totalHistorical, '', '', '', '', '', '']);
+    summaryData.push(['Current Run - Successful', results.length, '', '', '', '', '', '']);
+    summaryData.push(['Current Run - Failed', errors.length, '', '', '', '', '', '']);
+    summaryData.push(['Total Successful', totalSuccessful, '', '', '', '', '', '']);
+    summaryData.push(['Total Failed', totalFailed, '', '', '', '', '', '']);
+    summaryData.push(['Overall Success Rate', totalReports > 0 ? 
+      ((totalSuccessful / totalReports) * 100).toFixed(1) + '%' : '0%', 
       '', '', '', '', '', '']);
-    summaryData.push(['Total Rows', results.reduce(function(sum, r) { return sum + r.rowCount; }, 0), '', '', '', '', '', '']);
-    summaryData.push(['Chunked Reports', results.filter(r => r.chunked).length, '', '', '', '', '', '']);
-    summaryData.push(['Generated', new Date().toLocaleString(), '', '', '', '', '', '']);
+    summaryData.push(['Total Rows Processed', totalRows, '', '', '', '', '', '']);
+    summaryData.push(['Chunked Reports', completedReports.filter(r => r.chunked).length + 
+                     results.filter(r => r.chunked).length, '', '', '', '', '', '']);
+    summaryData.push(['Last Updated', new Date().toLocaleString(), '', '', '', '', '', '']);
 
     // Write data
     summarySheet.getRange(1, 1, summaryData.length, 8).setValues(summaryData);
     
     // Format summary
     this.formatSummarySheet(summarySheet, 8, summaryData.length);
+    
+    this.logger.info('Enhanced summary sheet created', { 
+      totalReports: totalReports,
+      historicalCompleted: totalHistorical,
+      currentSuccessful: results.length,
+      currentFailed: errors.length,
+      totalSuccessful: totalSuccessful
+    });
   }
 
   formatSummarySheet(sheet, columnCount, rowCount) {
@@ -1669,6 +1714,27 @@ function restartDiscovery() {
   const tracker = new EnhancedProgressTracker(orchestrator.config, orchestrator.metrics);
   tracker.clearAll();
   return orchestrator.runCompleteDiscovery({ forceRestart: true });
+}
+
+/**
+ * Refresh the summary sheet with all historical data
+ * This will show all completed reports from previous runs
+ */
+function refreshSummarySheet() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  const completedReports = orchestrator.progressTracker.getCompletedReports();
+  
+  console.log('Refreshing summary sheet with historical data...');
+  console.log('Found ' + completedReports.length + ' historical completed reports');
+  
+  // Create summary with historical data only
+  orchestrator.spreadsheetManager.createSummarySheet([], []);
+  
+  console.log('Summary sheet refreshed with all historical data');
+  return {
+    historicalReports: completedReports.length,
+    message: 'Summary sheet refreshed with all historical data'
+  };
 }
 
 function discoverAllReports() {
