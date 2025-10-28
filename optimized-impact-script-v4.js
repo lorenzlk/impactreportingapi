@@ -74,6 +74,18 @@ class ImpactConfig {
       forceRefresh: false, // Force refresh all data regardless of freshness
       enableDataFreshness: true, // Enable freshness checking
       
+      // Date Range Filtering
+      enableDateFiltering: false, // Enable date range filtering
+      startDate: null, // Start date for reports (YYYY-MM-DD format)
+      endDate: null, // End date for reports (YYYY-MM-DD format)
+      dateRangePresets: {
+        'august-2025': { start: '2025-08-01', end: '2025-08-31' },
+        'september-2025': { start: '2025-09-01', end: '2025-09-30' },
+        'october-2025': { start: '2025-10-01', end: '2025-10-31' },
+        'q3-2025': { start: '2025-07-01', end: '2025-09-30' },
+        'q4-2025': { start: '2025-10-01', end: '2025-12-31' }
+      }
+      
       // Credentials (Loaded from Script Properties for security)
       impactSid: this.getSecureCredential('IMPACT_SID'),
       impactToken: this.getSecureCredential('IMPACT_TOKEN'),
@@ -551,6 +563,24 @@ class EnhancedAPIClient {
     this.logger.debug('Scheduling export', { reportId: reportId, params: params });
     
     const queryParts = ['subid=mula'];
+    
+    // Add date range parameters if configured
+    if (this.config.get('enableDateFiltering', false)) {
+      const startDate = this.config.get('startDate');
+      const endDate = this.config.get('endDate');
+      
+      if (startDate) {
+        queryParts.push('startdate=' + encodeURIComponent(startDate));
+        this.logger.debug('Added start date', { startDate: startDate });
+      }
+      
+      if (endDate) {
+        queryParts.push('enddate=' + encodeURIComponent(endDate));
+        this.logger.debug('Added end date', { endDate: endDate });
+      }
+    }
+    
+    // Add any additional parameters
     for (const key in params) {
       queryParts.push(encodeURIComponent(key) + '=' + encodeURIComponent(params[key]));
     }
@@ -2032,6 +2062,148 @@ function getDetailedFreshnessReport() {
   console.log(JSON.stringify(report, null, 2));
   
   return report;
+}
+
+/**
+ * Set date range for reports
+ * @param {string} startDate - Start date in YYYY-MM-DD format
+ * @param {string} endDate - End date in YYYY-MM-DD format
+ */
+function setDateRange(startDate, endDate) {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  
+  // Validate date format
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(startDate)) {
+    throw new Error('Start date must be in YYYY-MM-DD format');
+  }
+  if (!dateRegex.test(endDate)) {
+    throw new Error('End date must be in YYYY-MM-DD format');
+  }
+  
+  // Validate date logic
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (start > end) {
+    throw new Error('Start date cannot be after end date');
+  }
+  
+  orchestrator.config.set('enableDateFiltering', true);
+  orchestrator.config.set('startDate', startDate);
+  orchestrator.config.set('endDate', endDate);
+  
+  console.log('Date range set successfully:');
+  console.log('Start Date: ' + startDate);
+  console.log('End Date: ' + endDate);
+  console.log('Run runCompleteDiscovery() to get reports for this date range');
+  
+  return {
+    message: 'Date range set successfully',
+    startDate: startDate,
+    endDate: endDate,
+    nextStep: 'Run runCompleteDiscovery() to get reports for this date range'
+  };
+}
+
+/**
+ * Set date range using preset
+ * @param {string} preset - Preset name (august-2025, september-2025, october-2025, q3-2025, q4-2025)
+ */
+function setDateRangePreset(preset) {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  const presets = orchestrator.config.get('dateRangePresets', {});
+  
+  if (!presets[preset]) {
+    const availablePresets = Object.keys(presets).join(', ');
+    throw new Error('Invalid preset. Available presets: ' + availablePresets);
+  }
+  
+  const dateRange = presets[preset];
+  return setDateRange(dateRange.start, dateRange.end);
+}
+
+/**
+ * Clear date range filtering (get all data)
+ */
+function clearDateRange() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  
+  orchestrator.config.set('enableDateFiltering', false);
+  orchestrator.config.set('startDate', null);
+  orchestrator.config.set('endDate', null);
+  
+  console.log('Date range filtering cleared');
+  console.log('Next run will get all available data');
+  
+  return {
+    message: 'Date range filtering cleared',
+    nextStep: 'Next run will get all available data'
+  };
+}
+
+/**
+ * Get current date range configuration
+ */
+function getDateRangeConfig() {
+  const orchestrator = new UltraOptimizedOrchestrator();
+  
+  const config = {
+    enableDateFiltering: orchestrator.config.get('enableDateFiltering', false),
+    startDate: orchestrator.config.get('startDate'),
+    endDate: orchestrator.config.get('endDate'),
+    availablePresets: Object.keys(orchestrator.config.get('dateRangePresets', {}))
+  };
+  
+  console.log('Current Date Range Configuration:');
+  console.log('Date Filtering Enabled: ' + config.enableDateFiltering);
+  if (config.enableDateFiltering) {
+    console.log('Start Date: ' + config.startDate);
+    console.log('End Date: ' + config.endDate);
+  }
+  console.log('Available Presets: ' + config.availablePresets.join(', '));
+  
+  return config;
+}
+
+/**
+ * Run discovery for specific months (August, September, October 2025)
+ */
+function runMonthlyReports2025() {
+  console.log('Running reports for August, September, and October 2025...');
+  
+  const results = {
+    august: null,
+    september: null,
+    october: null
+  };
+  
+  try {
+    // August 2025
+    console.log('\n=== AUGUST 2025 ===');
+    setDateRangePreset('august-2025');
+    results.august = runCompleteDiscovery();
+    
+    // September 2025
+    console.log('\n=== SEPTEMBER 2025 ===');
+    setDateRangePreset('september-2025');
+    results.september = runCompleteDiscovery();
+    
+    // October 2025
+    console.log('\n=== OCTOBER 2025 ===');
+    setDateRangePreset('october-2025');
+    results.october = runCompleteDiscovery();
+    
+    console.log('\n=== MONTHLY REPORTS COMPLETE ===');
+    console.log('August 2025: ' + (results.august.successful?.length || 0) + ' reports');
+    console.log('September 2025: ' + (results.september.successful?.length || 0) + ' reports');
+    console.log('October 2025: ' + (results.october.successful?.length || 0) + ' reports');
+    
+    return results;
+    
+  } catch (error) {
+    console.log('Error running monthly reports: ' + error.message);
+    throw error;
+  }
 }
 
 function discoverAllReports() {
