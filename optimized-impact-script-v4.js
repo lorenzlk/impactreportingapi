@@ -84,7 +84,7 @@ class ImpactConfig {
         'october-2025': { start: '2025-10-01', end: '2025-10-31' },
         'q3-2025': { start: '2025-07-01', end: '2025-09-30' },
         'q4-2025': { start: '2025-10-01', end: '2025-12-31' }
-      }
+      },
       
       // Credentials (Loaded from Script Properties for security)
       impactSid: this.getSecureCredential('IMPACT_SID'),
@@ -1029,23 +1029,56 @@ class EnhancedSpreadsheetManager {
   }
 
   createSummarySheet(results, errors) {
-    this.logger.info('Creating enhanced summary sheet');
+    this.logger.info('Creating enhanced summary sheet', {
+      successfulCount: results ? results.length : 0,
+      errorCount: errors ? errors.length : 0
+    });
 
-    const spreadsheet = this.getSpreadsheet();
+    let spreadsheet;
+    try {
+      spreadsheet = this.getSpreadsheet();
+    } catch (spreadsheetError) {
+      this.logger.error('Cannot access spreadsheet for summary update', {
+        error: spreadsheetError.message,
+        spreadsheetId: this.spreadsheetId
+      });
+      throw new Error('Failed to access spreadsheet: ' + spreadsheetError.message);
+    }
     
     // Clear existing summary
-    const existingSummary = spreadsheet.getSheetByName('DISCOVERY SUMMARY');
-    if (existingSummary) {
-      spreadsheet.deleteSheet(existingSummary);
+    let existingSummary;
+    try {
+      existingSummary = spreadsheet.getSheetByName('DISCOVERY SUMMARY');
+      if (existingSummary) {
+        spreadsheet.deleteSheet(existingSummary);
+        this.logger.debug('Deleted existing DISCOVERY SUMMARY sheet');
+      }
+    } catch (deleteError) {
+      this.logger.warn('Could not delete existing summary sheet', {
+        error: deleteError.message
+      });
+      // Continue anyway - might not exist
     }
 
-    const summarySheet = spreadsheet.insertSheet('DISCOVERY SUMMARY', 0);
+    let summarySheet;
+    try {
+      summarySheet = spreadsheet.insertSheet('DISCOVERY SUMMARY', 0);
+      this.logger.debug('Created new DISCOVERY SUMMARY sheet');
+    } catch (insertError) {
+      this.logger.error('Failed to create summary sheet', {
+        error: insertError.message
+      });
+      throw new Error('Failed to create summary sheet: ' + insertError.message);
+    }
     
     // Get historical completed reports
-    const completedReports = this.progressTracker.getCompletedReports();
+    const completedReports = this.progressTracker ? this.progressTracker.getCompletedReports() : [];
+    const safeResults = results || [];
+    const safeErrors = errors || [];
+    
     this.logger.info('Including historical data', { 
-      currentResults: results.length,
-      currentErrors: errors.length,
+      currentResults: safeResults.length,
+      currentErrors: safeErrors.length,
       historicalCompleted: completedReports.length
     });
     
@@ -1055,85 +1088,136 @@ class EnhancedSpreadsheetManager {
     ];
 
     // Add historical completed reports first
-    completedReports.forEach(function(completed) {
-      summaryData.push([
-        completed.reportId,
-        completed.reportName || 'N/A',
-        completed.sheetName || 'N/A',
-        completed.rowCount || 0,
-        completed.columnCount || 0,
-        'SUCCESS (Historical)',
-        completed.chunked ? 'Split into ' + completed.chunkCount + ' parts' : '',
-        completed.processedAt ? new Date(completed.processedAt).toLocaleString() : 'N/A'
-      ]);
-    });
+    const currentTimestamp = new Date();
+    if (completedReports && completedReports.length > 0) {
+      completedReports.forEach(function(completed) {
+        // Build notes field with original info plus last verified date
+        const notes = [];
+        if (completed.chunked) {
+          notes.push('Split into ' + completed.chunkCount + ' parts');
+        }
+        notes.push('Last verified: ' + currentTimestamp.toLocaleString());
+        
+        summaryData.push([
+          completed.reportId,
+          completed.reportName || 'N/A',
+          completed.sheetName || 'N/A',
+          completed.rowCount || 0,
+          completed.columnCount || 0,
+          'SUCCESS (Historical)',
+          notes.join(' | '),
+          completed.processedAt ? new Date(completed.processedAt).toLocaleString() : 'N/A'
+        ]);
+      });
+    }
 
     // Add current successful results
-    results.forEach(function(result) {
-      summaryData.push([
-        result.reportId,
-        result.reportName || 'N/A',
-        result.sheetName,
-        result.rowCount,
-        result.columnCount,
-        'SUCCESS (Current)',
-        result.chunked ? 'Split into ' + result.chunkCount + ' parts' : '',
-        result.processedAt ? result.processedAt.toLocaleString() : 'N/A'
-      ]);
-    });
+    if (safeResults.length > 0) {
+      safeResults.forEach(function(result) {
+        summaryData.push([
+          result.reportId,
+          result.reportName || 'N/A',
+          result.sheetName || 'N/A',
+          result.rowCount || 0,
+          result.columnCount || 0,
+          'SUCCESS (Current)',
+          result.chunked ? 'Split into ' + (result.chunkCount || 0) + ' parts' : '',
+          result.processedAt ? (result.processedAt.toLocaleString ? result.processedAt.toLocaleString() : new Date(result.processedAt).toLocaleString()) : new Date().toLocaleString()
+        ]);
+      });
+    }
 
     // Add current errors
-    errors.forEach(function(error) {
-      summaryData.push([
-        error.reportId,
-        error.reportName || 'N/A',
-        'N/A',
-        0,
-        0,
-        'ERROR (Current)',
-        error.error.substring(0, 100),
-        'N/A'
-      ]);
-    });
+    if (safeErrors.length > 0) {
+      const currentTimestamp = new Date();
+      this.logger.debug('Adding ' + safeErrors.length + ' error entries to summary', {
+        errorCount: safeErrors.length,
+        errorIds: safeErrors.map(e => e.reportId || 'UNKNOWN')
+      });
+      
+      safeErrors.forEach(function(error) {
+        summaryData.push([
+          error.reportId || 'UNKNOWN',
+          error.reportName || 'N/A',
+          'N/A',
+          0,
+          0,
+          'ERROR (Current)',
+          (error.error || error.message || 'Unknown error').substring(0, 100),
+          currentTimestamp.toLocaleString()
+        ]);
+      });
+      
+      this.logger.debug('Added ' + safeErrors.length + ' error entries to summary data');
+    } else {
+      this.logger.debug('No errors to add to summary');
+    }
 
     // Calculate totals
-    const totalHistorical = completedReports.length;
-    const totalCurrent = results.length + errors.length;
-    const totalSuccessful = totalHistorical + results.length;
-    const totalFailed = errors.length;
+    const totalHistorical = completedReports ? completedReports.length : 0;
+    const totalCurrent = safeResults.length + safeErrors.length;
+    const totalSuccessful = totalHistorical + safeResults.length;
+    const totalFailed = safeErrors.length;
     const totalReports = totalHistorical + totalCurrent;
-    const totalRows = completedReports.reduce((sum, r) => sum + (r.rowCount || 0), 0) + 
-                     results.reduce((sum, r) => sum + r.rowCount, 0);
+    const totalRows = (completedReports ? completedReports.reduce((sum, r) => sum + (r.rowCount || 0), 0) : 0) + 
+                     safeResults.reduce((sum, r) => sum + (r.rowCount || 0), 0);
 
     // Add comprehensive statistics
     summaryData.push(['', '', '', '', '', '', '', '']);
     summaryData.push(['=== COMPREHENSIVE STATISTICS ===', '', '', '', '', '', '', '']);
     summaryData.push(['Total Reports (All Time)', totalReports, '', '', '', '', '', '']);
     summaryData.push(['Historical Completed', totalHistorical, '', '', '', '', '', '']);
-    summaryData.push(['Current Run - Successful', results.length, '', '', '', '', '', '']);
-    summaryData.push(['Current Run - Failed', errors.length, '', '', '', '', '', '']);
+    summaryData.push(['Current Run - Successful', safeResults.length, '', '', '', '', '', '']);
+    summaryData.push(['Current Run - Failed', safeErrors.length, '', '', '', '', '', '']);
     summaryData.push(['Total Successful', totalSuccessful, '', '', '', '', '', '']);
     summaryData.push(['Total Failed', totalFailed, '', '', '', '', '', '']);
     summaryData.push(['Overall Success Rate', totalReports > 0 ? 
       ((totalSuccessful / totalReports) * 100).toFixed(1) + '%' : '0%', 
       '', '', '', '', '', '']);
     summaryData.push(['Total Rows Processed', totalRows, '', '', '', '', '', '']);
-    summaryData.push(['Chunked Reports', completedReports.filter(r => r.chunked).length + 
-                     results.filter(r => r.chunked).length, '', '', '', '', '', '']);
+    const chunkedHistorical = completedReports ? completedReports.filter(r => r.chunked).length : 0;
+    const chunkedCurrent = safeResults.filter(r => r.chunked).length;
+    summaryData.push(['Chunked Reports', chunkedHistorical + chunkedCurrent, '', '', '', '', '', '']);
+    // Add separator and last updated timestamp
+    summaryData.push(['', '', '', '', '', '', '', '']);
+    summaryData.push(['=== SUMMARY LAST UPDATED ===', '', '', '', '', '', '', '']);
     summaryData.push(['Last Updated', new Date().toLocaleString(), '', '', '', '', '', '']);
+    summaryData.push(['Date', new Date().toLocaleDateString(), '', '', '', '', '', '']);
+    summaryData.push(['Time', new Date().toLocaleTimeString(), '', '', '', '', '', '']);
 
     // Write data
-    summarySheet.getRange(1, 1, summaryData.length, 8).setValues(summaryData);
+    try {
+      summarySheet.getRange(1, 1, summaryData.length, 8).setValues(summaryData);
+      this.logger.debug('Summary data written to sheet', {
+        rowCount: summaryData.length,
+        columnCount: 8
+      });
+    } catch (writeError) {
+      this.logger.error('Failed to write summary data', {
+        error: writeError.message,
+        rowCount: summaryData.length
+      });
+      throw new Error('Failed to write summary data: ' + writeError.message);
+    }
     
     // Format summary
-    this.formatSummarySheet(summarySheet, 8, summaryData.length);
+    try {
+      this.formatSummarySheet(summarySheet, 8, summaryData.length);
+      this.logger.debug('Summary sheet formatted');
+    } catch (formatError) {
+      this.logger.warn('Failed to format summary sheet', {
+        error: formatError.message
+      });
+      // Don't fail if formatting fails - data is already written
+    }
     
-    this.logger.info('Enhanced summary sheet created', { 
+    this.logger.info('Enhanced summary sheet created successfully', { 
       totalReports: totalReports,
       historicalCompleted: totalHistorical,
-      currentSuccessful: results.length,
-      currentFailed: errors.length,
-      totalSuccessful: totalSuccessful
+      currentSuccessful: results ? results.length : 0,
+      currentFailed: errors ? errors.length : 0,
+      totalSuccessful: totalSuccessful,
+      lastUpdated: new Date().toISOString()
     });
   }
 
@@ -1385,10 +1469,70 @@ class UltraOptimizedOrchestrator {
       const reports = this.apiClient.discoverReports();
       this.logger.info('Report discovery complete', { totalReports: reports.length });
       
-      // Filter out completed reports if resuming
-      const pendingReports = resume ? 
-        reports.filter(r => !completed.some(c => c.reportId === r.Id)) : 
-        reports;
+      // Filter reports based on completion and freshness
+      let pendingReports;
+      if (resume) {
+        const freshnessHours = this.config.get('dataFreshnessHours', 24);
+        const enableFreshness = this.config.get('enableDataFreshness', true);
+        const now = new Date();
+        
+        pendingReports = reports.filter(r => {
+          const completedReport = completed.find(c => c.reportId === r.Id);
+          
+          // If not completed, include it
+          if (!completedReport) {
+            return true;
+          }
+          
+          // If completed, check freshness
+          if (enableFreshness) {
+            let freshnessData = this.spreadsheetManager.getDataFreshness(r.Id);
+            let lastUpdated;
+            
+            // If no freshness data, use the completed report's processedAt as fallback
+            if (!freshnessData) {
+              if (completedReport.processedAt) {
+                lastUpdated = new Date(completedReport.processedAt);
+                this.logger.info('Completed report ' + r.Id + ' has no freshness data, using processedAt: ' + lastUpdated.toISOString());
+              } else {
+                // No data at all - assume stale and reprocess
+                this.logger.info('Completed report ' + r.Id + ' has no freshness or processedAt data - will reprocess');
+                return true;
+              }
+            } else {
+              lastUpdated = new Date(freshnessData.lastUpdated);
+            }
+            
+            // Check if data is stale
+            const hoursSinceUpdate = (now - lastUpdated) / (1000 * 60 * 60);
+            
+            if (hoursSinceUpdate >= freshnessHours) {
+              this.logger.info('Completed report ' + r.Id + ' is stale (' + hoursSinceUpdate.toFixed(1) + 'h old) - will reprocess', {
+                hoursSinceUpdate: hoursSinceUpdate.toFixed(1),
+                threshold: freshnessHours,
+                lastUpdated: lastUpdated.toISOString()
+              });
+              return true; // Include stale reports for reprocessing
+            } else {
+              this.logger.debug('Completed report ' + r.Id + ' is fresh (' + hoursSinceUpdate.toFixed(1) + 'h old) - will skip', {
+                hoursSinceUpdate: hoursSinceUpdate.toFixed(1),
+                threshold: freshnessHours
+              });
+              return false; // Skip fresh reports
+            }
+          }
+          
+          // If freshness checking is disabled, skip all completed reports
+          return false;
+        });
+        
+        const skippedCount = reports.length - pendingReports.length;
+        if (skippedCount > 0) {
+          this.logger.info('Skipped ' + skippedCount + ' fresh/completed reports');
+        }
+      } else {
+        pendingReports = reports;
+      }
       
       this.logger.info('Processing reports', { 
         total: reports.length,
@@ -1398,6 +1542,25 @@ class UltraOptimizedOrchestrator {
 
       if (pendingReports.length === 0) {
         this.logger.info('All reports already completed');
+        
+        // Still update summary to show current state
+        this.checkpoint('creating_summary');
+        this.logger.info('Updating discovery summary (all reports completed)', {
+          successfulCount: 0,
+          failedCount: 0,
+          historicalCompleted: completed.length
+        });
+        
+        try {
+          this.spreadsheetManager.createSummarySheet([], []);
+          this.logger.info('Discovery summary updated successfully (all reports already completed)');
+        } catch (summaryError) {
+          this.logger.error('Failed to update discovery summary', { 
+            error: summaryError.message
+          });
+          console.error('CRITICAL: Discovery summary update failed:', summaryError.message);
+        }
+        
         return { successful: [], failed: [], completed: completed.length };
       }
 
@@ -1407,6 +1570,32 @@ class UltraOptimizedOrchestrator {
       
       if (exportResults.scheduled.length === 0) {
         this.logger.warn('No exports were successfully scheduled');
+        
+        // Still update summary to show failed attempts
+        this.checkpoint('creating_summary');
+        this.logger.info('Updating discovery summary (no exports scheduled)', {
+          successfulCount: 0,
+          failedCount: exportResults.errors ? exportResults.errors.length : 0
+        });
+        
+        try {
+          const errorsToPass = exportResults.errors || [];
+          this.logger.info('Passing errors to summary sheet', {
+            errorCount: errorsToPass.length,
+            errorReportIds: errorsToPass.map(e => e.reportId || 'UNKNOWN')
+          });
+          
+          this.spreadsheetManager.createSummarySheet([], errorsToPass);
+          this.logger.info('Discovery summary updated successfully (no exports scheduled)', {
+            errorsIncluded: errorsToPass.length
+          });
+        } catch (summaryError) {
+          this.logger.error('Failed to update discovery summary', { 
+            error: summaryError.message
+          });
+          console.error('CRITICAL: Discovery summary update failed:', summaryError.message);
+        }
+        
         return { successful: [], failed: exportResults.errors };
       }
 
@@ -1414,9 +1603,33 @@ class UltraOptimizedOrchestrator {
       this.checkpoint('processing_exports');
       const results = this.processExportsOptimized(exportResults.scheduled);
 
-      // Create comprehensive summary
+      // Create comprehensive summary (with error handling)
       this.checkpoint('creating_summary');
-      this.spreadsheetManager.createSummarySheet(results.successful, results.failed);
+      this.logger.info('Updating discovery summary', {
+        successfulCount: results.successful ? results.successful.length : 0,
+        failedCount: results.failed ? results.failed.length : 0
+      });
+      
+      try {
+        this.spreadsheetManager.createSummarySheet(
+          results.successful || [], 
+          results.failed || []
+        );
+        this.logger.info('Discovery summary updated successfully', {
+          successful: results.successful ? results.successful.length : 0,
+          failed: results.failed ? results.failed.length : 0
+        });
+      } catch (summaryError) {
+        this.logger.error('Failed to update discovery summary', { 
+          error: summaryError.message,
+          stack: summaryError.stack,
+          successfulCount: results.successful ? results.successful.length : 0,
+          failedCount: results.failed ? results.failed.length : 0
+        });
+        // Log to console for visibility
+        console.error('CRITICAL: Discovery summary update failed:', summaryError.message);
+        // Don't fail the entire run if summary update fails, but log it prominently
+      }
 
       // Final metrics and cleanup
       const duration = Date.now() - this.startTime;
@@ -1558,18 +1771,36 @@ class UltraOptimizedOrchestrator {
         
         // Mark as complete for resume capability
         this.progressTracker.markReportComplete(job.reportId, {
+          reportName: result.reportName,
           sheetName: result.sheetName,
           rowCount: result.rowCount,
+          columnCount: result.columnCount,
+          chunked: result.chunked,
+          chunkCount: result.chunkCount,
           processedAt: result.processedAt
         });
         
-        // Save progress periodically
+        // Save progress periodically and update summary incrementally
         if ((i + 1) % this.config.get('progressSaveInterval', 5) === 0) {
           this.progressTracker.saveProgress('processing', {
             successful: successful.length,
             failed: failed.length,
             processed: i + 1
           });
+          
+          // Update summary incrementally so user can see progress
+          try {
+            this.spreadsheetManager.createSummarySheet(successful, failed);
+            this.logger.debug('Summary updated incrementally', {
+              successful: successful.length,
+              failed: failed.length
+            });
+          } catch (summaryError) {
+            this.logger.warn('Failed to update summary incrementally', {
+              error: summaryError.message
+            });
+            // Continue processing even if summary update fails
+          }
         }
 
       } catch (error) {
@@ -2329,4 +2560,162 @@ function optimizeConfiguration() {
   
   Logger.log('✅ Configuration optimized for performance!');
   return config.config;
+}
+
+/**
+ * Run ONLY the SkuLevelAction report
+ * This bypasses discovery and goes straight to the specific report
+ */
+function runSkuLevelActionOnly() {
+  const config = new ImpactConfig();
+  const metrics = new PerformanceMetrics();
+  const logger = new EnhancedLogger(config, metrics);
+  const apiClient = new EnhancedAPIClient(config, logger, metrics);
+  const dataProcessor = new EnhancedDataProcessor(config, logger, metrics);
+  const spreadsheetManager = new EnhancedSpreadsheetManager(config, logger, metrics);
+  
+  const reportId = 'SkuLevelActions';
+  const reportName = 'SkuLevelAction';
+  
+  logger.info('Running SkuLevelAction report only', { reportId: reportId });
+  
+  try {
+    // Step 1: Schedule the export
+    logger.info('Scheduling SkuLevelAction export...');
+    const job = apiClient.scheduleExport(reportId);
+    logger.info('Export scheduled successfully', { jobId: job.jobId });
+    
+    // Step 2: Poll for completion
+    logger.info('Waiting for export to complete...');
+    const status = pollJobCompletion(job.jobId, apiClient, logger);
+    
+    if (status.status !== 'completed') {
+      throw new Error('Export failed: ' + (status.error || 'Unknown error'));
+    }
+    
+    logger.info('Export completed successfully');
+    
+    // Step 3: Download the data
+    logger.info('Downloading export data...');
+    const csvData = apiClient.downloadResult(status.resultUri);
+    logger.info('Data downloaded', { size: csvData.length });
+    
+    // Step 4: Process the CSV data
+    logger.info('Processing CSV data...');
+    const processedData = dataProcessor.processCSVData(csvData);
+    logger.info('Data processed', { 
+      rows: processedData.rowCount, 
+      columns: processedData.columnCount 
+    });
+    
+    // Step 5: Create the spreadsheet sheet
+    logger.info('Creating spreadsheet sheet...');
+    const sheetInfo = spreadsheetManager.createReportSheet(
+      reportId, 
+      processedData, 
+      { 
+        name: reportName, 
+        jobId: job.jobId, 
+        scheduledAt: job.scheduledAt 
+      }
+    );
+    
+    logger.info('SkuLevelAction report completed successfully!', {
+      sheetName: sheetInfo.sheetName,
+      rowCount: sheetInfo.rowCount,
+      columnCount: sheetInfo.columnCount,
+      chunked: sheetInfo.chunked
+    });
+    
+    return {
+      success: true,
+      reportId: reportId,
+      reportName: reportName,
+      sheetName: sheetInfo.sheetName,
+      rowCount: sheetInfo.rowCount,
+      columnCount: sheetInfo.columnCount,
+      chunked: sheetInfo.chunked,
+      metrics: metrics.getSummary()
+    };
+    
+  } catch (error) {
+    logger.error('SkuLevelAction report failed', { 
+      error: error.message,
+      reportId: reportId 
+    });
+    
+    return {
+      success: false,
+      reportId: reportId,
+      reportName: reportName,
+      error: error.message,
+      metrics: metrics.getSummary()
+    };
+  }
+}
+
+/**
+ * Helper function to poll job completion
+ */
+function pollJobCompletion(jobId, apiClient, logger) {
+  const maxAttempts = 30;
+  let delay = 3000;
+  const maxDelay = 60000;
+  const multiplier = 1.2;
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const status = apiClient.checkJobStatus(jobId);
+      
+      if (status.status === 'completed') {
+        logger.info('Job completed', { jobId: jobId, attempts: attempt + 1 });
+        return status;
+      }
+      
+      if (status.status === 'failed') {
+        throw new Error('Job failed: ' + (status.error || 'Unknown error'));
+      }
+      
+      delay = Math.min(delay * multiplier, maxDelay);
+      logger.debug('Job polling', { 
+        jobId: jobId, 
+        status: status.status, 
+        attempt: attempt + 1, 
+        nextDelay: delay 
+      });
+      
+      Utilities.sleep(delay);
+      
+    } catch (error) {
+      if (attempt === maxAttempts - 1) {
+        throw error;
+      }
+      logger.warn('Polling error, retrying', { 
+        jobId: jobId, 
+        attempt: attempt + 1, 
+        error: error.message 
+      });
+      Utilities.sleep(delay);
+    }
+  }
+  
+  throw new Error('Job polling timed out after ' + maxAttempts + ' attempts');
+}
+
+/**
+ * Run SkuLevelAction with date range filtering
+ * @param {string} startDate - Start date in YYYY-MM-DD format
+ * @param {string} endDate - End date in YYYY-MM-DD format
+ */
+function runSkuLevelActionWithDateRange(startDate, endDate) {
+  const config = new ImpactConfig();
+  
+  // Enable date filtering
+  config.set('enableDateFiltering', true);
+  config.set('startDate', startDate);
+  config.set('endDate', endDate);
+  
+  Logger.log('Running SkuLevelAction with date range: ' + startDate + ' to ' + endDate);
+  
+  return runSkuLevelActionOnly();
 }
