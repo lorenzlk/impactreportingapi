@@ -160,6 +160,66 @@ class TeamConfig {
     const teams = this.config.teams || {};
     return Object.values(teams).filter(team => team.active);
   }
+
+  /**
+   * Set manual team assignment for a specific row
+   * This takes highest priority and persists through refresh cycles
+   * @param {string} uniqueKey - Unique identifier for the row (e.g., "ActionTrackerId_12345")
+   * @param {string} teamName - Team name to assign
+   * @param {string} reason - Optional reason for manual assignment
+   */
+  setManualRowAssignment(uniqueKey, teamName, reason = 'Manual assignment') {
+    if (!this.config.manualRowAssignments) {
+      this.config.manualRowAssignments = {};
+    }
+    this.config.manualRowAssignments[uniqueKey] = {
+      team: teamName,
+      assignedAt: new Date().toISOString(),
+      reason: reason
+    };
+    this.saveConfiguration();
+  }
+
+  /**
+   * Get manual team assignment for a specific row
+   * @param {string} uniqueKey - Unique identifier for the row
+   * @returns {string|null} - Team name if manually assigned, null otherwise
+   */
+  getManualRowAssignment(uniqueKey) {
+    if (!this.config.manualRowAssignments) {
+      return null;
+    }
+    const assignment = this.config.manualRowAssignments[uniqueKey];
+    return assignment ? assignment.team : null;
+  }
+
+  /**
+   * Remove manual team assignment for a specific row
+   * @param {string} uniqueKey - Unique identifier for the row
+   */
+  removeManualRowAssignment(uniqueKey) {
+    if (!this.config.manualRowAssignments) {
+      return;
+    }
+    delete this.config.manualRowAssignments[uniqueKey];
+    this.saveConfiguration();
+  }
+
+  /**
+   * Get all manual row assignments
+   * @returns {Object} - Map of unique keys to team assignments
+   */
+  getAllManualRowAssignments() {
+    return this.config.manualRowAssignments || {};
+  }
+
+  /**
+   * Clear all manual row assignments
+   */
+  clearAllManualRowAssignments() {
+    this.config.manualRowAssignments = {};
+    this.saveConfiguration();
+  }
 }
 
 // ============================================================================
@@ -228,29 +288,67 @@ class TeamMapper {
   }
 
   /**
+   * Generate a unique key for a row based on ActionTrackerId or other identifiers
+   * @param {Object} row - Data row
+   * @returns {string} - Unique key for this row
+   */
+  generateRowKey(row) {
+    // Try various ID fields in priority order
+    const actionTrackerId = row['ActionTrackerId'] || row['actionTrackerid'] || row['Action Tracker Id'];
+    if (actionTrackerId) {
+      return 'ActionTrackerId_' + actionTrackerId;
+    }
+
+    const actionId = row['ActionId'] || row['actionid'] || row['Action ID'];
+    if (actionId) {
+      return 'ActionId_' + actionId;
+    }
+
+    const orderId = row['OrderId'] || row['orderid'] || row['Order ID'];
+    if (orderId) {
+      return 'OrderId_' + orderId;
+    }
+
+    // Fallback: create composite key from available fields
+    const partner = row['Partner'] || row['partner'] || '';
+    const subid = row['SubID'] || row['subid'] || row['SubId'] || '';
+    const date = row['EventDate'] || row['eventDate'] || row['Date'] || '';
+    const amount = row['Sale_amount'] || row['Revenue'] || row['revenue'] || '';
+
+    return 'Composite_' + partner + '_' + subid + '_' + date + '_' + amount;
+  }
+
+  /**
    * Map a conversation/row to a team based on various identifiers
    */
   mapToTeam(row) {
+    // PRIORITY 0: Check for manual row assignment FIRST (highest priority)
+    const rowKey = this.generateRowKey(row);
+    const manualAssignment = this.teamConfig.getManualRowAssignment(rowKey);
+    if (manualAssignment) {
+      return manualAssignment;
+    }
+
     const rules = this.teamConfig.get('teamMappingRules', {});
-    
+
     // Extract identifiers from row
     const partner = (row['Partner'] || row['partner'] || '').toString().toLowerCase();
     const subid = (row['SubID'] || row['subid'] || row['SubId'] || '').toString().toLowerCase();
     const campaign = (row['Campaign'] || row['campaign'] || '').toString().toLowerCase();
     const conversationId = (row['ConversationID'] || row['conversation_id'] || '').toString().toLowerCase();
-    
-    // Try manual mappings first (highest priority)
+
+    // PRIORITY 1: Try manual mappings (pattern-based, highest priority after row assignments)
     if (rules.manualMappings) {
       for (const [identifier, teamName] of Object.entries(rules.manualMappings)) {
-        if (partner === identifier.toLowerCase() || 
+        if (partner === identifier.toLowerCase() ||
             subid === identifier.toLowerCase() ||
             conversationId === identifier.toLowerCase()) {
           return teamName;
         }
       }
     }
-    
-    // Try SubID patterns (high priority for Mula conversations)
+
+    // PRIORITY 2: Try SubID patterns (high priority for Mula conversations)
     if (rules.subidPatterns && subid) {
       for (const [teamName, patterns] of Object.entries(rules.subidPatterns)) {
         if (this.matchesPattern(subid, patterns)) {
@@ -258,8 +356,8 @@ class TeamMapper {
         }
       }
     }
-    
-    // Try partner patterns
+
+    // PRIORITY 3: Try partner patterns
     if (rules.partnerPatterns && partner) {
       for (const [teamName, patterns] of Object.entries(rules.partnerPatterns)) {
         if (this.matchesPattern(partner, patterns)) {
@@ -267,8 +365,8 @@ class TeamMapper {
         }
       }
     }
-    
-    // Try campaign patterns
+
+    // PRIORITY 4: Try campaign patterns
     if (rules.campaignPatterns && campaign) {
       for (const [teamName, patterns] of Object.entries(rules.campaignPatterns)) {
         if (this.matchesPattern(campaign, patterns)) {
@@ -276,8 +374,8 @@ class TeamMapper {
         }
       }
     }
-    
-    // Return default team if no match found
+
+    // PRIORITY 5 (LOWEST): Return default team if no match found
     return this.teamConfig.get('defaultTeam', 'Unassigned');
   }
 
@@ -1303,26 +1401,26 @@ function runCompleteTeamAnalysisPipeline(startDate = null, endDate = null) {
   console.log('2. Analyze by team');
   console.log('3. Generate comprehensive reports');
   console.log('');
-  
+
   try {
     // Step 1: Pull SKU data WITH TEAM ENRICHMENT
     console.log('Step 1: Pulling SKU data with team attribution...');
-    
+
     // NOTE: Date range filtering with team enrichment not yet implemented
     // For now, use the enriched version without date filtering
     if (startDate && endDate) {
       console.log('⚠️  Date range filtering with team enrichment not yet implemented.');
       console.log('    Using full data pull with teams...');
     }
-    
+
     // Use the FORCE REFRESH version to ensure Team column is added
     console.log('🔄 Force refreshing to ensure Team column is present...');
     forceRefreshSkuDataWithTeams();
-    
+
     // Step 2: Run team analysis
     console.log('\nStep 2: Running team analysis...');
     const result = runTeamSKUAnalysis();
-    
+
     if (result.success) {
       console.log('\n✅ PIPELINE COMPLETE!');
       console.log('');
@@ -1333,12 +1431,435 @@ function runCompleteTeamAnalysisPipeline(startDate = null, endDate = null) {
       console.log('✓ SKU_PERFORMANCE_BY_TEAM (SKU breakdown)');
       console.log('✓ TEAM_COMPARISON (side-by-side comparison)');
     }
-    
+
     return result;
-    
+
   } catch (error) {
     console.error('Pipeline failed: ' + error.message);
     return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
+// MENU FUNCTIONS
+// ============================================================================
+
+/**
+ * Create custom menu when spreadsheet opens
+ * This adds a "Team Management" menu to the Google Sheets UI
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Team Management')
+    .addItem('Manually Assign Teams', 'manuallyAssignTeamsUI')
+    .addSeparator()
+    .addItem('View Manual Assignments', 'viewManualTeamAssignments')
+    .addItem('Clear All Manual Assignments', 'clearAllManualTeamAssignments')
+    .addSeparator()
+    .addItem('Refresh Data (Preserves Manual Assignments)', 'forceRefreshSkuDataWithTeams')
+    .addToUi();
+}
+
+// ============================================================================
+// MANUAL TEAM ASSIGNMENT FUNCTIONS
+// ============================================================================
+/**
+ * MANUAL TEAM ASSIGNMENT - HOW IT WORKS
+ *
+ * This feature allows you to manually assign teams to specific items and have those
+ * assignments persist through data refresh cycles. Manual assignments have the HIGHEST
+ * priority in the team assignment logic.
+ *
+ * PRIORITY ORDER (Highest to Lowest):
+ * 0. Manual row assignments (set via these functions)
+ * 1. Manual mappings (exact ID matches in config)
+ * 2. SubID patterns
+ * 3. Partner patterns
+ * 4. Campaign patterns
+ * 5. Default team (Unassigned)
+ *
+ * HOW TO USE:
+ *
+ * Method 1: Interactive UI (Recommended for bulk assignment)
+ *   - Open your Google Sheet
+ *   - Click "Team Management" menu > "Manually Assign Teams"
+ *   - Follow the prompts to assign all unassigned items to a team
+ *
+ * Method 2: Programmatic (For specific rows)
+ *   assignTeamToRows([2, 5, 10], 'Team Alpha', 'Fixing unassigned orders')
+ *   assignTeamToRows(['12345', '12346'], 'Team Beta', 'Manual correction')
+ *
+ * Method 3: Bulk assignment (All unassigned)
+ *   assignTeamToAllUnassigned('Team Gamma', 'Initial cleanup')
+ *
+ * PERSISTENCE:
+ * Manual assignments are stored in PropertiesService using unique row identifiers
+ * (ActionTrackerId, ActionId, or OrderId). When data refreshes, the system checks
+ * for manual assignments FIRST before applying any automatic rules. This means your
+ * manual assignments will NEVER be overwritten by data refreshes.
+ *
+ * VIEWING & MANAGING:
+ * - View all manual assignments: viewManualTeamAssignments()
+ * - Clear all manual assignments: clearAllManualTeamAssignments()
+ * - Or use the "Team Management" menu in Google Sheets
+ *
+ * IMPORTANT NOTES:
+ * - Manual assignments are stored per-row using unique identifiers
+ * - They persist across data refreshes and sheet recreations
+ * - They have highest priority in team assignment logic
+ * - You can override them at any time by reassigning
+ * - Clearing manual assignments reverts rows to automatic assignment rules
+ */
+
+/**
+ * Manually assign teams to unassigned items via interactive UI
+ * This function presents a UI for assigning teams to items currently marked as "Unassigned"
+ * Manual assignments persist through data refresh cycles
+ */
+function manuallyAssignTeamsUI() {
+  const impactConfig = new ImpactConfig();
+  const teamConfig = new TeamConfig();
+  const metrics = new PerformanceMetrics();
+  const logger = new EnhancedLogger(impactConfig, metrics);
+  const spreadsheetManager = new EnhancedSpreadsheetManager(impactConfig, logger, metrics);
+
+  const spreadsheet = spreadsheetManager.getSpreadsheet();
+  const skuSheet = spreadsheet.getSheetByName('SkuLevelAction');
+
+  if (!skuSheet) {
+    SpreadsheetApp.getUi().alert('Error', 'SkuLevelAction sheet not found. Please run the pipeline first.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // Read all data
+  const data = skuSheet.getDataRange().getValues();
+  const headers = data[0];
+  const rows = data.slice(1);
+
+  // Find Team column
+  const teamColIndex = headers.findIndex(h => h && h.toString().toLowerCase() === 'team');
+  if (teamColIndex === -1) {
+    SpreadsheetApp.getUi().alert('Error', 'Team column not found in SkuLevelAction sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // Find unassigned rows
+  const unassignedRows = [];
+  rows.forEach((row, index) => {
+    const team = row[teamColIndex];
+    if (!team || team === '' || team.toString().toLowerCase() === 'unassigned') {
+      // Convert row to object
+      const rowObj = {};
+      headers.forEach((header, i) => {
+        rowObj[header] = row[i];
+      });
+      unassignedRows.push({
+        rowIndex: index + 2, // +2 because: +1 for 1-based indexing, +1 for header row
+        data: rowObj,
+        displayText: 'Row ' + (index + 2) + ': ' +
+          (rowObj['Partner'] || 'N/A') + ' | ' +
+          (rowObj['SubID'] || 'N/A') + ' | $' +
+          (rowObj['Sale_amount'] || rowObj['Revenue'] || '0')
+      });
+    }
+  });
+
+  if (unassignedRows.length === 0) {
+    SpreadsheetApp.getUi().alert('No Unassigned Items', 'All items have been assigned to teams!', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // Get list of available teams
+  const teams = teamConfig.getActiveTeams();
+  const teamNames = teams.map(t => t.name).filter(name => name !== 'Unassigned');
+
+  if (teamNames.length === 0) {
+    SpreadsheetApp.getUi().alert('Error', 'No teams configured. Please configure teams first.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // Show dialog with unassigned count
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Manual Team Assignment',
+    'Found ' + unassignedRows.length + ' unassigned items.\n\n' +
+    'Available teams:\n' + teamNames.join(', ') + '\n\n' +
+    'Do you want to proceed with manual assignment?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  // Simple prompt for team selection
+  const teamPrompt = ui.prompt(
+    'Assign Team to All Unassigned',
+    'Enter team name to assign to ALL ' + unassignedRows.length + ' unassigned items:\n\n' +
+    'Available teams:\n' + teamNames.join(', '),
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (teamPrompt.getSelectedButton() === ui.Button.OK) {
+    const selectedTeam = teamPrompt.getResponseText().trim();
+
+    // Validate team name
+    if (!teamNames.includes(selectedTeam)) {
+      ui.alert('Error', 'Invalid team name. Please enter one of: ' + teamNames.join(', '), ui.ButtonSet.OK);
+      return;
+    }
+
+    // Perform bulk assignment
+    const result = assignTeamToAllUnassigned(selectedTeam, 'Manual bulk assignment via UI');
+
+    if (result.success) {
+      ui.alert('Success', result.message + '\n\nThese assignments will persist through data refreshes.', ui.ButtonSet.OK);
+    } else {
+      ui.alert('Error', 'Assignment failed: ' + result.error, ui.ButtonSet.OK);
+    }
+  }
+}
+
+/**
+ * Assign team to specific rows by ActionTrackerId or row number
+ * This function can be called programmatically or from the UI
+ * @param {Array|string} rowIdentifiers - Array of ActionTrackerIds or row numbers, or single identifier
+ * @param {string} teamName - Team name to assign
+ * @param {string} reason - Optional reason for assignment
+ * @returns {Object} - Result object with success status and count
+ */
+function assignTeamToRows(rowIdentifiers, teamName, reason = 'Manual assignment') {
+  try {
+    const impactConfig = new ImpactConfig();
+    const teamConfig = new TeamConfig();
+    const metrics = new PerformanceMetrics();
+    const logger = new EnhancedLogger(impactConfig, metrics);
+    const spreadsheetManager = new EnhancedSpreadsheetManager(impactConfig, logger, metrics);
+    const teamMapper = new TeamMapper(teamConfig);
+
+    // Normalize input to array
+    if (!Array.isArray(rowIdentifiers)) {
+      rowIdentifiers = [rowIdentifiers];
+    }
+
+    const spreadsheet = spreadsheetManager.getSpreadsheet();
+    const skuSheet = spreadsheet.getSheetByName('SkuLevelAction');
+
+    if (!skuSheet) {
+      throw new Error('SkuLevelAction sheet not found');
+    }
+
+    // Read all data
+    const data = skuSheet.getDataRange().getValues();
+    const headers = data[0];
+    const rows = data.slice(1);
+
+    // Find Team column
+    const teamColIndex = headers.findIndex(h => h && h.toString().toLowerCase() === 'team');
+    if (teamColIndex === -1) {
+      throw new Error('Team column not found');
+    }
+
+    let assignedCount = 0;
+
+    // Process each identifier
+    rowIdentifiers.forEach(identifier => {
+      // Check if identifier is a row number
+      if (typeof identifier === 'number' || !isNaN(parseInt(identifier))) {
+        const rowNumber = typeof identifier === 'number' ? identifier : parseInt(identifier);
+        const arrayIndex = rowNumber - 2; // Convert from 1-based sheet row to 0-based array index (minus header)
+
+        if (arrayIndex >= 0 && arrayIndex < rows.length) {
+          const row = rows[arrayIndex];
+          const rowObj = {};
+          headers.forEach((header, i) => {
+            rowObj[header] = row[i];
+          });
+
+          // Generate key and store manual assignment
+          const rowKey = teamMapper.generateRowKey(rowObj);
+          teamConfig.setManualRowAssignment(rowKey, teamName, reason);
+
+          // Update the sheet immediately
+          skuSheet.getRange(rowNumber, teamColIndex + 1).setValue(teamName);
+          assignedCount++;
+        }
+      } else {
+        // Treat as ActionTrackerId
+        const foundIndex = rows.findIndex(row => {
+          const rowObj = {};
+          headers.forEach((header, i) => {
+            rowObj[header] = row[i];
+          });
+          const actionTrackerId = rowObj['ActionTrackerId'] || rowObj['actionTrackerid'] || rowObj['Action Tracker Id'];
+          return actionTrackerId && actionTrackerId.toString() === identifier.toString();
+        });
+
+        if (foundIndex !== -1) {
+          const row = rows[foundIndex];
+          const rowObj = {};
+          headers.forEach((header, i) => {
+            rowObj[header] = row[i];
+          });
+
+          // Generate key and store manual assignment
+          const rowKey = teamMapper.generateRowKey(rowObj);
+          teamConfig.setManualRowAssignment(rowKey, teamName, reason);
+
+          // Update the sheet immediately
+          const sheetRow = foundIndex + 2; // +2 for 1-based indexing and header row
+          skuSheet.getRange(sheetRow, teamColIndex + 1).setValue(teamName);
+          assignedCount++;
+        }
+      }
+    });
+
+    logger.info('Manual team assignment completed', {
+      teamName: teamName,
+      assignedCount: assignedCount,
+      totalRequested: rowIdentifiers.length
+    });
+
+    return {
+      success: true,
+      assignedCount: assignedCount,
+      totalRequested: rowIdentifiers.length,
+      message: 'Assigned ' + assignedCount + ' items to ' + teamName
+    };
+
+  } catch (error) {
+    Logger.log('Error in assignTeamToRows: ' + error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Bulk assign team to all currently unassigned items
+ * @param {string} teamName - Team name to assign to all unassigned items
+ * @param {string} reason - Optional reason for assignment
+ * @returns {Object} - Result object with success status and count
+ */
+function assignTeamToAllUnassigned(teamName, reason = 'Bulk manual assignment') {
+  try {
+    const impactConfig = new ImpactConfig();
+    const teamConfig = new TeamConfig();
+    const metrics = new PerformanceMetrics();
+    const logger = new EnhancedLogger(impactConfig, metrics);
+    const spreadsheetManager = new EnhancedSpreadsheetManager(impactConfig, logger, metrics);
+    const teamMapper = new TeamMapper(teamConfig);
+
+    const spreadsheet = spreadsheetManager.getSpreadsheet();
+    const skuSheet = spreadsheet.getSheetByName('SkuLevelAction');
+
+    if (!skuSheet) {
+      throw new Error('SkuLevelAction sheet not found');
+    }
+
+    // Read all data
+    const data = skuSheet.getDataRange().getValues();
+    const headers = data[0];
+    const rows = data.slice(1);
+
+    // Find Team column
+    const teamColIndex = headers.findIndex(h => h && h.toString().toLowerCase() === 'team');
+    if (teamColIndex === -1) {
+      throw new Error('Team column not found');
+    }
+
+    let assignedCount = 0;
+    const updates = [];
+
+    // Find and process all unassigned rows
+    rows.forEach((row, index) => {
+      const team = row[teamColIndex];
+      if (!team || team === '' || team.toString().toLowerCase() === 'unassigned') {
+        const rowObj = {};
+        headers.forEach((header, i) => {
+          rowObj[header] = row[i];
+        });
+
+        // Generate key and store manual assignment
+        const rowKey = teamMapper.generateRowKey(rowObj);
+        teamConfig.setManualRowAssignment(rowKey, teamName, reason);
+
+        // Queue sheet update
+        const sheetRow = index + 2; // +2 for 1-based indexing and header row
+        updates.push({ row: sheetRow, col: teamColIndex + 1, value: teamName });
+        assignedCount++;
+      }
+    });
+
+    // Batch update the sheet
+    if (updates.length > 0) {
+      updates.forEach(update => {
+        skuSheet.getRange(update.row, update.col).setValue(update.value);
+      });
+    }
+
+    logger.info('Bulk manual team assignment completed', {
+      teamName: teamName,
+      assignedCount: assignedCount
+    });
+
+    return {
+      success: true,
+      assignedCount: assignedCount,
+      message: 'Assigned ' + assignedCount + ' unassigned items to ' + teamName
+    };
+
+  } catch (error) {
+    Logger.log('Error in assignTeamToAllUnassigned: ' + error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * View all manual team assignments
+ * @returns {Object} - Map of row keys to team assignments
+ */
+function viewManualTeamAssignments() {
+  const teamConfig = new TeamConfig();
+  const assignments = teamConfig.getAllManualRowAssignments();
+
+  console.log('=== MANUAL TEAM ASSIGNMENTS ===');
+  console.log('Total manual assignments: ' + Object.keys(assignments).length);
+  console.log('');
+
+  Object.entries(assignments).forEach(([key, assignment]) => {
+    console.log('Key: ' + key);
+    console.log('  Team: ' + assignment.team);
+    console.log('  Assigned: ' + assignment.assignedAt);
+    console.log('  Reason: ' + assignment.reason);
+    console.log('');
+  });
+
+  return assignments;
+}
+
+/**
+ * Clear all manual team assignments
+ * Use with caution - this removes all manual assignments!
+ */
+function clearAllManualTeamAssignments() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Clear All Manual Assignments',
+    'This will remove ALL manual team assignments. This action cannot be undone.\n\nAre you sure?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response === ui.Button.YES) {
+    const teamConfig = new TeamConfig();
+    teamConfig.clearAllManualRowAssignments();
+
+    ui.alert('Success', 'All manual team assignments have been cleared.', ui.ButtonSet.OK);
+    console.log('All manual team assignments cleared');
   }
 }
 
