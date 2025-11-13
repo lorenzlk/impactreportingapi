@@ -86,6 +86,15 @@ class ImpactConfig {
         'q4-2025': { start: '2025-10-01', end: '2025-12-31' }
       },
       
+      // Report Exclusion
+      excludedReports: [
+        'capital_one_mp_action_listing_sku',
+        '12172',
+        'custom_partner_payable_click_data',
+        'getty_adplacement_mp_action_listing_sku',
+        'mp_action_listing_sku_ipsos'
+      ], // Reports to exclude from discovery and processing
+      
       // Credentials (Loaded from Script Properties for security)
       impactSid: this.getSecureCredential('IMPACT_SID'),
       impactToken: this.getSecureCredential('IMPACT_TOKEN'),
@@ -553,8 +562,25 @@ class EnhancedAPIClient {
   discoverReports() {
     this.logger.info('Discovering reports');
     const response = this.makeRequest('/Mediapartners/' + this.credentials.sid + '/Reports');
-    const reports = (response.data.Reports || []).filter(r => r.ApiAccessible);
+    const excludedReports = this.config.get('excludedReports', []);
+    const reports = (response.data.Reports || [])
+      .filter(r => r.ApiAccessible)
+      .filter(r => {
+        // Exclude reports by ID or Name
+        const isExcluded = excludedReports.some(excluded => 
+          r.Id === excluded || r.Name === excluded || 
+          r.Id.toString() === excluded || r.Name.toString() === excluded
+        );
+        if (isExcluded) {
+          this.logger.debug('Excluding report', { reportId: r.Id, reportName: r.Name });
+        }
+        return !isExcluded;
+      });
     
+    const excludedCount = (response.data.Reports || []).filter(r => r.ApiAccessible).length - reports.length;
+    if (excludedCount > 0) {
+      this.logger.info('Excluded ' + excludedCount + ' report(s) from discovery');
+    }
     this.logger.info('Found ' + reports.length + ' accessible reports');
     return reports;
   }
