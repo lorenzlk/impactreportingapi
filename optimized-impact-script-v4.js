@@ -2745,3 +2745,278 @@ function runSkuLevelActionWithDateRange(startDate, endDate) {
   
   return runSkuLevelActionOnly();
 }
+
+/**
+ * Analyze daily Mula revenue from SkuLevelAction data
+ * Shows revenue per day and date range of the data
+ */
+function analyzeDailyMulaRevenue() {
+  console.log('=== DAILY MULA REVENUE ANALYSIS ===\n');
+  
+  try {
+    const config = new ImpactConfig();
+    const metrics = new PerformanceMetrics();
+    const logger = new EnhancedLogger(config, metrics);
+    const spreadsheetManager = new EnhancedSpreadsheetManager(config, logger, metrics);
+    
+    const spreadsheet = spreadsheetManager.getSpreadsheet();
+    const skuSheet = spreadsheet.getSheetByName('SkuLevelAction') || 
+                     spreadsheet.getSheetByName('SkuLevelActions');
+    
+    if (!skuSheet) {
+      console.log('❌ No SkuLevelAction sheet found. Run runSkuLevelActionOnly() first.');
+      return null;
+    }
+    
+    const data = skuSheet.getDataRange().getValues();
+    const headers = data[0];
+    const rows = data.slice(1);
+    
+    // Find column indices
+    const dateIndex = headers.findIndex(h => 
+      h && (h.toLowerCase() === 'date' || h.toLowerCase() === 'period' || h.toLowerCase() === 'actiondate')
+    );
+    const saleAmountIndex = headers.findIndex(h => 
+      h && (h.toLowerCase() === 'saleamount' || h.toLowerCase() === 'sale_amount' || h.toLowerCase() === 'revenue')
+    );
+    const pubSubid1Index = headers.findIndex(h => 
+      h && h.toLowerCase() === 'pubsubid1'
+    );
+    const subidIndex = headers.findIndex(h => 
+      h && h.toLowerCase() === 'subid'
+    );
+    
+    if (dateIndex === -1) {
+      console.log('❌ Date column not found. Available columns:');
+      headers.forEach((h, i) => console.log('  ' + (i + 1) + '. ' + h));
+      return null;
+    }
+    
+    if (saleAmountIndex === -1) {
+      console.log('❌ SaleAmount/Revenue column not found.');
+      return null;
+    }
+    
+    // Filter for Mula data
+    const mulaRows = rows.filter(row => {
+      const pubSubid1 = pubSubid1Index >= 0 ? (row[pubSubid1Index] || '').toString().toLowerCase() : '';
+      const subid = subidIndex >= 0 ? (row[subidIndex] || '').toString().toLowerCase() : '';
+      return pubSubid1 === 'mula' || subid === 'mula' || subid.includes('mula');
+    });
+    
+    console.log('📊 Total Mula records: ' + mulaRows.length);
+    console.log('📊 Total records in sheet: ' + rows.length);
+    console.log('');
+    
+    if (mulaRows.length === 0) {
+      console.log('⚠️  No Mula records found. Check PubSubid1 or SubID columns.');
+      return null;
+    }
+    
+    // Group by date and calculate daily revenue
+    const dailyRevenue = {};
+    const dates = [];
+    
+    mulaRows.forEach(row => {
+      const dateValue = row[dateIndex];
+      const saleAmount = parseFloat((row[saleAmountIndex] || 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+      
+      if (!dateValue) return;
+      
+      // Parse date (handle various formats)
+      let date;
+      if (dateValue instanceof Date) {
+        date = dateValue;
+      } else if (typeof dateValue === 'string') {
+        date = new Date(dateValue);
+      } else {
+        return;
+      }
+      
+      if (isNaN(date.getTime())) return;
+      
+      // Format as YYYY-MM-DD for grouping
+      const dateKey = date.toISOString().split('T')[0];
+      
+      if (!dailyRevenue[dateKey]) {
+        dailyRevenue[dateKey] = {
+          date: dateKey,
+          revenue: 0,
+          conversions: 0,
+          displayDate: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        };
+        dates.push(dateKey);
+      }
+      
+      dailyRevenue[dateKey].revenue += saleAmount;
+      dailyRevenue[dateKey].conversions += 1;
+    });
+    
+    // Sort dates
+    dates.sort();
+    
+    // Calculate totals and date range
+    const totalRevenue = Object.values(dailyRevenue).reduce((sum, day) => sum + day.revenue, 0);
+    const totalConversions = Object.values(dailyRevenue).reduce((sum, day) => sum + day.conversions, 0);
+    const dateRange = {
+      start: dates[0],
+      end: dates[dates.length - 1],
+      days: dates.length
+    };
+    
+    // Display results
+    console.log('📅 DATE RANGE:');
+    console.log('   Start: ' + (dateRange.start ? new Date(dateRange.start).toLocaleDateString() : 'N/A'));
+    console.log('   End: ' + (dateRange.end ? new Date(dateRange.end).toLocaleDateString() : 'N/A'));
+    console.log('   Days with data: ' + dateRange.days);
+    console.log('');
+    
+    console.log('💰 DAILY REVENUE BREAKDOWN:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Date'.padEnd(15) + 'Revenue'.padEnd(15) + 'Conversions'.padEnd(15) + 'Avg Order Value');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    dates.forEach(dateKey => {
+      const day = dailyRevenue[dateKey];
+      const avgOrderValue = day.conversions > 0 ? day.revenue / day.conversions : 0;
+      console.log(
+        day.displayDate.padEnd(15) +
+        '$' + day.revenue.toFixed(2).padStart(12) +
+        day.conversions.toString().padStart(14) +
+        '$' + avgOrderValue.toFixed(2).padStart(12)
+      );
+    });
+    
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('TOTAL'.padEnd(15) + '$' + totalRevenue.toFixed(2).padStart(12) + totalConversions.toString().padStart(14) + '$' + (totalConversions > 0 ? (totalRevenue / totalConversions).toFixed(2).padStart(12) : '0.00'.padStart(12)));
+    console.log('');
+    
+    const avgDailyRevenue = dateRange.days > 0 ? totalRevenue / dateRange.days : 0;
+    console.log('📈 SUMMARY:');
+    console.log('   Total Revenue: $' + totalRevenue.toFixed(2));
+    console.log('   Total Conversions: ' + totalConversions);
+    console.log('   Average Daily Revenue: $' + avgDailyRevenue.toFixed(2));
+    console.log('   Average Order Value: $' + (totalConversions > 0 ? (totalRevenue / totalConversions).toFixed(2) : '0.00'));
+    console.log('');
+    
+    return {
+      dateRange: dateRange,
+      dailyRevenue: dailyRevenue,
+      totals: {
+        revenue: totalRevenue,
+        conversions: totalConversions,
+        avgDailyRevenue: avgDailyRevenue,
+        avgOrderValue: totalConversions > 0 ? totalRevenue / totalConversions : 0
+      },
+      mulaRecordCount: mulaRows.length,
+      totalRecordCount: rows.length
+    };
+    
+  } catch (error) {
+    console.error('❌ Error analyzing daily Mula revenue: ' + error.message);
+    console.error(error.stack);
+    return null;
+  }
+}
+
+/**
+ * Check date range of any report sheet
+ * @param {string} sheetName - Name of the sheet to check
+ */
+function checkReportDateRange(sheetName) {
+  console.log('=== CHECKING REPORT DATE RANGE ===\n');
+  console.log('Sheet: ' + sheetName);
+  console.log('');
+  
+  try {
+    const config = new ImpactConfig();
+    const metrics = new PerformanceMetrics();
+    const logger = new EnhancedLogger(config, metrics);
+    const spreadsheetManager = new EnhancedSpreadsheetManager(config, logger, metrics);
+    
+    const spreadsheet = spreadsheetManager.getSpreadsheet();
+    const sheet = spreadsheet.getSheetByName(sheetName);
+    
+    if (!sheet) {
+      console.log('❌ Sheet "' + sheetName + '" not found.');
+      console.log('\nAvailable sheets:');
+      spreadsheet.getSheets().forEach(s => console.log('  - ' + s.getName()));
+      return null;
+    }
+    
+    const data = sheet.getDataRange().getValues();
+    if (data.length < 2) {
+      console.log('⚠️  Sheet has no data rows.');
+      return null;
+    }
+    
+    const headers = data[0];
+    const rows = data.slice(1);
+    
+    // Find date column
+    const dateIndex = headers.findIndex(h => 
+      h && (h.toLowerCase() === 'date' || h.toLowerCase() === 'period' || h.toLowerCase() === 'actiondate')
+    );
+    
+    if (dateIndex === -1) {
+      console.log('❌ No date column found. Available columns:');
+      headers.forEach((h, i) => console.log('  ' + (i + 1) + '. ' + h));
+      return null;
+    }
+    
+    // Extract all dates
+    const dates = [];
+    rows.forEach(row => {
+      const dateValue = row[dateIndex];
+      if (!dateValue) return;
+      
+      let date;
+      if (dateValue instanceof Date) {
+        date = dateValue;
+      } else if (typeof dateValue === 'string') {
+        date = new Date(dateValue);
+      } else {
+        return;
+      }
+      
+      if (!isNaN(date.getTime())) {
+        dates.push(date);
+      }
+    });
+    
+    if (dates.length === 0) {
+      console.log('⚠️  No valid dates found in the sheet.');
+      return null;
+    }
+    
+    dates.sort((a, b) => a - b);
+    
+    const startDate = dates[0];
+    const endDate = dates[dates.length - 1];
+    const days = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    const daysWithData = new Set(dates.map(d => d.toISOString().split('T')[0])).size;
+    
+    console.log('📅 DATE RANGE:');
+    console.log('   Start Date: ' + startDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
+    console.log('   End Date: ' + endDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
+    console.log('   Total Days in Range: ' + days);
+    console.log('   Days with Data: ' + daysWithData);
+    console.log('   Total Records: ' + rows.length);
+    console.log('   Records with Dates: ' + dates.length);
+    console.log('');
+    
+    return {
+      sheetName: sheetName,
+      startDate: startDate,
+      endDate: endDate,
+      totalDays: days,
+      daysWithData: daysWithData,
+      totalRecords: rows.length,
+      recordsWithDates: dates.length
+    };
+    
+  } catch (error) {
+    console.error('❌ Error checking date range: ' + error.message);
+    return null;
+  }
+}
