@@ -21,9 +21,9 @@ class BIConfig {
   loadConfiguration() {
     const defaults = {
       // Source data configuration
-      sourceSpreadsheetId: '1QDOxgElRvl6EvI02JP4knupUd-jLW7D6LJN-VyLS3ZY',
+      sourceSpreadsheetId: this.props.getProperty('IMPACT_SPREADSHEET_ID') || '1aLKEEw7Nx0O1DbZjnXnhOeDjcLRloLN0Y8K2SscZKIc',
       biSpreadsheetId: null, // Will be created automatically
-      
+
       // Dashboard settings
       enableAutoRefresh: true,
       refreshInterval: 24, // hours
@@ -33,7 +33,7 @@ class BIConfig {
         conversionDrop: 0.20, // 20% drop triggers alert
         clickDrop: 0.25 // 25% drop triggers alert
       },
-      
+
       // Visualization settings
       chartColors: {
         primary: '#2E7D32',
@@ -43,7 +43,7 @@ class BIConfig {
         danger: '#F44336',
         info: '#2196F3'
       },
-      
+
       // Date ranges for analysis
       dateRanges: {
         last7Days: 7,
@@ -51,7 +51,7 @@ class BIConfig {
         last90Days: 90,
         lastYear: 365
       },
-      
+
       // Performance metrics
       keyMetrics: [
         'revenue',
@@ -62,7 +62,7 @@ class BIConfig {
         'conversion_rate',
         'aov'
       ],
-      
+
       // Partner segmentation
       partnerTiers: {
         'Top Performers': { minRevenue: 10000, minConversions: 100 },
@@ -113,13 +113,14 @@ class BIDataProcessor {
   processSourceData() {
     const sourceSpreadsheet = SpreadsheetApp.openById(this.config.get('sourceSpreadsheetId'));
     const sheets = sourceSpreadsheet.getSheets();
-    
+
     const processedData = {
       partnerPerformance: [],
       campaignPerformance: [],
       clickPerformance: [],
       conversionPerformance: [],
       creativePerformance: [],
+      teamPerformance: [], // Added for Team Analysis
       summary: {
         totalRevenue: 0,
         totalConversions: 0,
@@ -149,6 +150,12 @@ class BIDataProcessor {
           processedData.conversionPerformance = this.processConversionData(data);
         } else if (sheetName.toLowerCase().includes('creative')) {
           processedData.creativePerformance = this.processCreativeData(data);
+        } else if (sheetName.toLowerCase().includes('skulevelaction')) {
+          // Process Team data from SkuLevelAction reports
+          const teamData = this.processTeamData(data);
+          if (teamData && teamData.length > 0) {
+            processedData.teamPerformance = processedData.teamPerformance.concat(teamData);
+          }
         }
 
         // Update summary
@@ -244,15 +251,45 @@ class BIDataProcessor {
     }));
   }
 
+  processTeamData(data) {
+    // Extract Team data from SkuLevelAction reports
+    // Looks for 'Team' column which is added by team-sku-analysis.js
+    // OR falls back to PubSubid3 if Team column is missing (though it should be there)
+
+    return data.map(row => {
+      let team = row['Team'] || 'Unassigned';
+
+      // Fallback logic if Team column is missing but PubSubid3 exists
+      if (team === 'Unassigned' || !team) {
+        const pubSubid3 = row['PubSubid3'] || row['pubsubid3'] || '';
+        if (pubSubid3) {
+          // Simple formatter fallback
+          team = pubSubid3.split('-')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+        }
+      }
+
+      return {
+        team: team,
+        revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || row['SaleAmount'] || 0),
+        conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
+        earnings: this.parseNumber(row['Earnings'] || row['earnings'] || 0),
+        quantity: this.parseNumber(row['Quantity'] || row['quantity'] || row['Items'] || 1),
+        date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      };
+    });
+  }
+
   updateSummary(summary, data) {
     summary.reportCount++;
-    
+
     data.forEach(row => {
       summary.totalRevenue += this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0);
       summary.totalConversions += this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0);
       summary.totalClicks += this.parseNumber(row['Clicks'] || row['clicks'] || 0);
       summary.totalEarnings += this.parseNumber(row['Earnings'] || row['earnings'] || 0);
-      
+
       const date = this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period']);
       if (date) {
         if (!summary.dateRange.start || date < summary.dateRange.start) {
@@ -308,29 +345,31 @@ class BIDashboardBuilder {
    */
   createDashboard() {
     Logger.log('Creating Business Intelligence Dashboard...');
-    
+
     // Create or get BI spreadsheet
     this.biSpreadsheet = this.getOrCreateBISpreadsheet();
-    
+
     // Process source data
     const data = this.dataProcessor.processSourceData();
-    
+
     // Create dashboard sheets
     this.createExecutiveSummary(data);
     this.createPerformanceAnalytics(data);
     this.createTrendAnalysis(data);
+    this.createTrendAnalysis(data);
+    this.createTeamAnalysis(data); // New Team Analysis Sheet
     this.createPartnerAnalysis(data);
     this.createCampaignAnalysis(data);
     this.createFinancialOverview(data);
     this.createAlertsAndInsights(data);
-    
+
     Logger.log('BI Dashboard created successfully!');
     return this.biSpreadsheet.getUrl();
   }
 
   getOrCreateBISpreadsheet() {
     const biSpreadsheetId = this.config.get('biSpreadsheetId');
-    
+
     if (biSpreadsheetId) {
       try {
         return SpreadsheetApp.openById(biSpreadsheetId);
@@ -338,29 +377,29 @@ class BIDashboardBuilder {
         Logger.log('BI Spreadsheet not found, creating new one...');
       }
     }
-    
+
     // Create new BI spreadsheet
     const biSpreadsheet = SpreadsheetApp.create('Impact.com Business Intelligence Dashboard');
     this.config.set('biSpreadsheetId', biSpreadsheet.getId());
-    
+
     return biSpreadsheet;
   }
 
   createExecutiveSummary(data) {
     const sheet = this.getOrCreateSheet('📊 Executive Summary');
-    
+
     // Clear existing content
     sheet.clear();
-    
+
     // Header
     sheet.getRange('A1').setValue('Impact.com Business Intelligence Dashboard');
     sheet.getRange('A1').setFontSize(20).setFontWeight('bold');
     sheet.getRange('A1:F1').merge();
-    
+
     // Last updated
     sheet.getRange('A2').setValue('Last Updated: ' + new Date().toLocaleString());
     sheet.getRange('A2').setFontStyle('italic');
-    
+
     // Key Metrics Row
     const metricsRow = 4;
     const metrics = [
@@ -371,154 +410,179 @@ class BIDashboardBuilder {
       ['Conversion Rate', this.formatPercentage(this.calculateOverallConversionRate(data))],
       ['Average Order Value', this.formatCurrency(this.calculateOverallAOV(data))]
     ];
-    
+
     // Headers
     sheet.getRange(metricsRow, 1, 1, 2).setValues([['Metric', 'Value']]);
     sheet.getRange(metricsRow, 1, 1, 2).setFontWeight('bold').setBackground('#2E7D32').setFontColor('white');
-    
+
     // Metrics data
     sheet.getRange(metricsRow + 1, 1, metrics.length, 2).setValues(metrics);
-    
+
     // Format metrics
     const metricsRange = sheet.getRange(metricsRow + 1, 1, metrics.length, 2);
     metricsRange.setBorder(true, true, true, true, true, true);
-    
+
     // Add charts
     this.addRevenueChart(sheet, data, 'H4');
     this.addConversionChart(sheet, data, 'H20');
-    
+
     // Auto-resize columns
+    sheet.autoResizeColumns(1, 10);
+  }
+
+  createTeamAnalysis(data) {
+    const sheet = this.getOrCreateSheet('🏆 Team Analysis');
+
+    sheet.clear();
+    sheet.getRange('A1').setValue('Team Performance Analysis');
+    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
+
+    // Aggregate Team Data
+    const teamData = this.aggregateTeamData(data.teamPerformance);
+
+    if (teamData.length === 0) {
+      sheet.getRange('A3').setValue('No Team data available. Ensure SkuLevelAction reports are processed.');
+      return;
+    }
+
+    // Team Performance Table
+    this.createTeamPerformanceTable(sheet, teamData, 3);
+
+    // Team Charts
+    this.addTeamRevenueChart(sheet, teamData, 'H3');
+    this.addTeamConversionChart(sheet, teamData, 'H15');
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createPerformanceAnalytics(data) {
     const sheet = this.getOrCreateSheet('📈 Performance Analytics');
-    
+
     // Clear existing content
     sheet.clear();
-    
+
     // Header
     sheet.getRange('A1').setValue('Performance Analytics');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Partner Performance Table
     const partnerData = this.aggregatePartnerData(data.partnerPerformance);
     this.createPartnerPerformanceTable(sheet, partnerData, 3);
-    
+
     // Campaign Performance Table
     const campaignData = this.aggregateCampaignData(data.campaignPerformance);
     this.createCampaignPerformanceTable(sheet, campaignData, 15);
-    
+
     // Performance Charts
     this.addPartnerPerformanceChart(sheet, partnerData, 'H3');
     this.addCampaignPerformanceChart(sheet, campaignData, 'H15');
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createTrendAnalysis(data) {
     const sheet = this.getOrCreateSheet('📅 Trend Analysis');
-    
+
     sheet.clear();
     sheet.getRange('A1').setValue('Trend Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Daily trends
     const dailyTrends = this.calculateDailyTrends(data);
     this.createTrendTable(sheet, dailyTrends, 3);
-    
+
     // Trend charts
     this.addRevenueTrendChart(sheet, dailyTrends, 'H3');
     this.addConversionTrendChart(sheet, dailyTrends, 'H15');
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createPartnerAnalysis(data) {
     const sheet = this.getOrCreateSheet('🤝 Partner Analysis');
-    
+
     sheet.clear();
     sheet.getRange('A1').setValue('Partner Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Partner tier analysis
     const partnerTiers = this.analyzePartnerTiers(data.partnerPerformance);
     this.createPartnerTierTable(sheet, partnerTiers, 3);
-    
+
     // Top performers
     const topPerformers = this.getTopPerformers(data.partnerPerformance, 10);
     this.createTopPerformersTable(sheet, topPerformers, 10);
-    
+
     // Partner charts
     this.addPartnerTierChart(sheet, partnerTiers, 'H3');
     this.addTopPerformersChart(sheet, topPerformers, 'H15');
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createCampaignAnalysis(data) {
     const sheet = this.getOrCreateSheet('🎯 Campaign Analysis');
-    
+
     sheet.clear();
     sheet.getRange('A1').setValue('Campaign Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Campaign performance
     const campaignData = this.aggregateCampaignData(data.campaignPerformance);
     this.createCampaignTable(sheet, campaignData, 3);
-    
+
     // Campaign efficiency
     const efficiencyData = this.calculateCampaignEfficiency(data.campaignPerformance);
     this.createEfficiencyTable(sheet, efficiencyData, 15);
-    
+
     // Campaign charts
     this.addCampaignRevenueChart(sheet, campaignData, 'H3');
     this.addEfficiencyChart(sheet, efficiencyData, 'H15');
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createFinancialOverview(data) {
     const sheet = this.getOrCreateSheet('💰 Financial Overview');
-    
+
     sheet.clear();
     sheet.getRange('A1').setValue('Financial Performance Overview');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Financial summary
     const financialData = this.calculateFinancialMetrics(data);
     this.createFinancialTable(sheet, financialData, 3);
-    
+
     // Revenue breakdown
     const revenueBreakdown = this.calculateRevenueBreakdown(data);
     this.createRevenueBreakdownTable(sheet, revenueBreakdown, 10);
-    
+
     // Financial charts
     this.addRevenueBreakdownChart(sheet, revenueBreakdown, 'H3');
     this.addEarningsChart(sheet, financialData, 'H15');
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
   createAlertsAndInsights(data) {
     const sheet = this.getOrCreateSheet('🚨 Alerts & Insights');
-    
+
     sheet.clear();
     sheet.getRange('A1').setValue('Alerts & Business Insights');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-    
+
     // Generate alerts
     const alerts = this.generateAlerts(data);
     this.createAlertsTable(sheet, alerts, 3);
-    
+
     // Generate insights
     const insights = this.generateInsights(data);
     this.createInsightsTable(sheet, insights, 10);
-    
+
     // Performance recommendations
     const recommendations = this.generateRecommendations(data);
     this.createRecommendationsTable(sheet, recommendations, 17);
-    
+
     sheet.autoResizeColumns(1, 10);
   }
 
@@ -531,9 +595,91 @@ class BIDashboardBuilder {
     return sheet;
   }
 
+  aggregateTeamData(teamData) {
+    const aggregated = {};
+
+    if (!teamData) return [];
+
+    teamData.forEach(item => {
+      const key = item.team;
+      if (!aggregated[key]) {
+        aggregated[key] = {
+          team: key,
+          revenue: 0,
+          conversions: 0,
+          earnings: 0,
+          quantity: 0
+        };
+      }
+
+      aggregated[key].revenue += item.revenue;
+      aggregated[key].conversions += item.conversions;
+      aggregated[key].earnings += item.earnings;
+      aggregated[key].quantity += item.quantity;
+    });
+
+    // Calculate derived metrics
+    Object.values(aggregated).forEach(team => {
+      team.aov = team.conversions > 0 ? team.revenue / team.conversions : 0;
+      team.commissionRate = team.revenue > 0 ? (team.earnings / team.revenue) * 100 : 0;
+    });
+
+    return Object.values(aggregated).sort((a, b) => b.revenue - a.revenue);
+  }
+
+  createTeamPerformanceTable(sheet, data, startRow) {
+    const headers = ['Rank', 'Team', 'Revenue', 'Conversions', 'Earnings', 'AOV', 'Comm. Rate'];
+
+    sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
+    sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#1976D2').setFontColor('white');
+
+    const rows = data.map((team, index) => [
+      index + 1,
+      team.team,
+      this.formatCurrency(team.revenue),
+      this.formatNumber(team.conversions),
+      this.formatCurrency(team.earnings),
+      this.formatCurrency(team.aov),
+      this.formatPercentage(team.commissionRate)
+    ]);
+
+    if (rows.length > 0) {
+      sheet.getRange(startRow + 1, 1, rows.length, headers.length).setValues(rows);
+      sheet.getRange(startRow + 1, 1, rows.length, headers.length).setBorder(true, true, true, true, true, true);
+    }
+  }
+
+  addTeamRevenueChart(sheet, data, position) {
+    if (data.length === 0) return;
+
+    const chart = sheet.newChart()
+      .setChartType(Charts.ChartType.BAR)
+      .addRange(sheet.getRange(4, 2, Math.min(data.length, 10), 2)) // Team and Revenue
+      .setPosition(3, 8, 0, 0)
+      .setOption('title', 'Top Teams by Revenue')
+      .setOption('legend', { position: 'none' })
+      .build();
+
+    sheet.insertChart(chart);
+  }
+
+  addTeamConversionChart(sheet, data, position) {
+    if (data.length === 0) return;
+
+    const chart = sheet.newChart()
+      .setChartType(Charts.ChartType.PIE)
+      .addRange(sheet.getRange(4, 2, Math.min(data.length, 5), 1)) // Teams
+      .addRange(sheet.getRange(4, 4, Math.min(data.length, 5), 1)) // Conversions
+      .setPosition(15, 8, 0, 0)
+      .setOption('title', 'Conversion Share by Team')
+      .build();
+
+    sheet.insertChart(chart);
+  }
+
   aggregatePartnerData(partnerData) {
     const aggregated = {};
-    
+
     partnerData.forEach(partner => {
       const key = partner.partner;
       if (!aggregated[key]) {
@@ -548,26 +694,26 @@ class BIDashboardBuilder {
           aov: 0
         };
       }
-      
+
       aggregated[key].revenue += partner.revenue;
       aggregated[key].conversions += partner.conversions;
       aggregated[key].clicks += partner.clicks;
       aggregated[key].earnings += partner.earnings;
     });
-    
+
     // Calculate derived metrics
     Object.values(aggregated).forEach(partner => {
       partner.epc = partner.clicks > 0 ? partner.earnings / partner.clicks : 0;
       partner.conversionRate = partner.clicks > 0 ? (partner.conversions / partner.clicks) * 100 : 0;
       partner.aov = partner.conversions > 0 ? partner.revenue / partner.conversions : 0;
     });
-    
+
     return Object.values(aggregated).sort((a, b) => b.revenue - a.revenue);
   }
 
   aggregateCampaignData(campaignData) {
     const aggregated = {};
-    
+
     campaignData.forEach(campaign => {
       const key = campaign.campaign;
       if (!aggregated[key]) {
@@ -580,29 +726,29 @@ class BIDashboardBuilder {
           cpc: 0
         };
       }
-      
+
       aggregated[key].revenue += campaign.revenue;
       aggregated[key].conversions += campaign.conversions;
       aggregated[key].clicks += campaign.clicks;
       aggregated[key].earnings += campaign.earnings;
     });
-    
+
     return Object.values(aggregated).sort((a, b) => b.revenue - a.revenue);
   }
 
   calculateDailyTrends(data) {
     const trends = {};
-    
+
     // Combine all data sources
     const allData = [
       ...data.partnerPerformance,
       ...data.campaignPerformance,
       ...data.conversionPerformance
     ];
-    
+
     allData.forEach(item => {
       if (!item.date) return;
-      
+
       const dateKey = item.date.toISOString().split('T')[0];
       if (!trends[dateKey]) {
         trends[dateKey] = {
@@ -613,13 +759,13 @@ class BIDashboardBuilder {
           earnings: 0
         };
       }
-      
+
       trends[dateKey].revenue += item.revenue || 0;
       trends[dateKey].conversions += item.conversions || 0;
       trends[dateKey].clicks += item.clicks || 0;
       trends[dateKey].earnings += item.earnings || 0;
     });
-    
+
     return Object.values(trends).sort((a, b) => new Date(a.date) - new Date(b.date));
   }
 
@@ -627,7 +773,7 @@ class BIDashboardBuilder {
     const aggregated = this.aggregatePartnerData(partnerData);
     const tiers = this.config.get('partnerTiers');
     const tierAnalysis = {};
-    
+
     Object.keys(tiers).forEach(tierName => {
       tierAnalysis[tierName] = {
         tier: tierName,
@@ -638,7 +784,7 @@ class BIDashboardBuilder {
         avgConversions: 0
       };
     });
-    
+
     aggregated.forEach(partner => {
       Object.keys(tiers).forEach(tierName => {
         const tier = tiers[tierName];
@@ -649,7 +795,7 @@ class BIDashboardBuilder {
         }
       });
     });
-    
+
     // Calculate averages
     Object.values(tierAnalysis).forEach(tier => {
       if (tier.count > 0) {
@@ -657,7 +803,7 @@ class BIDashboardBuilder {
         tier.avgConversions = tier.totalConversions / tier.count;
       }
     });
-    
+
     return Object.values(tierAnalysis);
   }
 
@@ -668,7 +814,7 @@ class BIDashboardBuilder {
 
   calculateCampaignEfficiency(campaignData) {
     const aggregated = this.aggregateCampaignData(campaignData);
-    
+
     return aggregated.map(campaign => ({
       campaign: campaign.campaign,
       revenue: campaign.revenue,
@@ -683,7 +829,7 @@ class BIDashboardBuilder {
 
   calculateFinancialMetrics(data) {
     const summary = data.summary;
-    
+
     return {
       totalRevenue: summary.totalRevenue,
       totalEarnings: summary.totalEarnings,
@@ -699,7 +845,7 @@ class BIDashboardBuilder {
   calculateRevenueBreakdown(data) {
     const partnerData = this.aggregatePartnerData(data.partnerPerformance);
     const totalRevenue = partnerData.reduce((sum, p) => sum + p.revenue, 0);
-    
+
     return partnerData.map(partner => ({
       partner: partner.partner,
       revenue: partner.revenue,
@@ -710,11 +856,11 @@ class BIDashboardBuilder {
   generateAlerts(data) {
     const alerts = [];
     const thresholds = this.config.get('alertThresholds');
-    
+
     // Revenue drop alert
     const recentRevenue = this.calculateRecentRevenue(data, 7);
     const previousRevenue = this.calculateRecentRevenue(data, 14, 7);
-    
+
     if (previousRevenue > 0) {
       const revenueDrop = (previousRevenue - recentRevenue) / previousRevenue;
       if (revenueDrop > thresholds.revenueDrop) {
@@ -726,16 +872,16 @@ class BIDashboardBuilder {
         });
       }
     }
-    
+
     // Conversion rate drop alert
     const recentConversions = this.calculateRecentConversions(data, 7);
     const recentClicks = this.calculateRecentClicks(data, 7);
     const recentRate = recentClicks > 0 ? (recentConversions / recentClicks) * 100 : 0;
-    
+
     const previousConversions = this.calculateRecentConversions(data, 14, 7);
     const previousClicks = this.calculateRecentClicks(data, 14, 7);
     const previousRate = previousClicks > 0 ? (previousConversions / previousClicks) * 100 : 0;
-    
+
     if (previousRate > 0) {
       const rateDrop = (previousRate - recentRate) / previousRate;
       if (rateDrop > thresholds.conversionDrop) {
@@ -747,13 +893,13 @@ class BIDashboardBuilder {
         });
       }
     }
-    
+
     return alerts;
   }
 
   generateInsights(data) {
     const insights = [];
-    
+
     // Top performer insight
     const topPerformers = this.getTopPerformers(data.partnerPerformance, 3);
     if (topPerformers.length > 0) {
@@ -764,7 +910,7 @@ class BIDashboardBuilder {
         action: 'Consider increasing budget allocation or creating similar partnerships'
       });
     }
-    
+
     // Conversion rate insight
     const overallRate = this.calculateOverallConversionRate(data);
     if (overallRate > 5) {
@@ -774,17 +920,17 @@ class BIDashboardBuilder {
         action: 'Maintain current strategies and consider scaling successful campaigns'
       });
     }
-    
+
     return insights;
   }
 
   generateRecommendations(data) {
     const recommendations = [];
-    
+
     // Revenue optimization
     const partnerData = this.aggregatePartnerData(data.partnerPerformance);
     const lowPerformers = partnerData.filter(p => p.revenue < 1000 && p.conversions < 10);
-    
+
     if (lowPerformers.length > 0) {
       recommendations.push({
         category: 'Partner Optimization',
@@ -793,11 +939,11 @@ class BIDashboardBuilder {
         impact: 'Revenue Growth'
       });
     }
-    
+
     // Campaign efficiency
     const campaignData = this.calculateCampaignEfficiency(data.campaignPerformance);
     const inefficientCampaigns = campaignData.filter(c => c.roas < 0.1);
-    
+
     if (inefficientCampaigns.length > 0) {
       recommendations.push({
         category: 'Campaign Optimization',
@@ -806,7 +952,7 @@ class BIDashboardBuilder {
         impact: 'Cost Reduction'
       });
     }
-    
+
     return recommendations;
   }
 
@@ -828,7 +974,7 @@ class BIDashboardBuilder {
     cutoffDate.setDate(cutoffDate.getDate() - days - offset);
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-    
+
     return data.partnerPerformance
       .filter(p => p.date && p.date >= cutoffDate && p.date < startDate)
       .reduce((sum, p) => sum + p.revenue, 0);
@@ -839,7 +985,7 @@ class BIDashboardBuilder {
     cutoffDate.setDate(cutoffDate.getDate() - days - offset);
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-    
+
     return data.partnerPerformance
       .filter(p => p.date && p.date >= cutoffDate && p.date < startDate)
       .reduce((sum, p) => sum + p.conversions, 0);
@@ -850,7 +996,7 @@ class BIDashboardBuilder {
     cutoffDate.setDate(cutoffDate.getDate() - days - offset);
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-    
+
     return data.partnerPerformance
       .filter(p => p.date && p.date >= cutoffDate && p.date < startDate)
       .reduce((sum, p) => sum + p.clicks, 0);
@@ -928,7 +1074,7 @@ class BIDashboardBuilder {
     const headers = ['Partner', 'Revenue', 'Conversions', 'Clicks', 'Earnings', 'EPC', 'Conv Rate', 'AOV'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#2E7D32').setFontColor('white');
-    
+
     const tableData = data.map(p => [
       p.partner,
       this.formatCurrency(p.revenue),
@@ -939,7 +1085,7 @@ class BIDashboardBuilder {
       this.formatPercentage(p.conversionRate),
       this.formatCurrency(p.aov)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -948,7 +1094,7 @@ class BIDashboardBuilder {
     const headers = ['Campaign', 'Revenue', 'Conversions', 'Clicks', 'Earnings', 'CPC'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#1976D2').setFontColor('white');
-    
+
     const tableData = data.map(c => [
       c.campaign,
       this.formatCurrency(c.revenue),
@@ -957,7 +1103,7 @@ class BIDashboardBuilder {
       this.formatCurrency(c.earnings),
       this.formatCurrency(c.cpc)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -966,7 +1112,7 @@ class BIDashboardBuilder {
     const headers = ['Date', 'Revenue', 'Conversions', 'Clicks', 'Earnings'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#FF9800').setFontColor('white');
-    
+
     const tableData = data.map(d => [
       d.date,
       this.formatCurrency(d.revenue),
@@ -974,7 +1120,7 @@ class BIDashboardBuilder {
       this.formatNumber(d.clicks),
       this.formatCurrency(d.earnings)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -983,7 +1129,7 @@ class BIDashboardBuilder {
     const headers = ['Tier', 'Count', 'Total Revenue', 'Total Conversions', 'Avg Revenue', 'Avg Conversions'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#9C27B0').setFontColor('white');
-    
+
     const tableData = data.map(t => [
       t.tier,
       t.count,
@@ -992,7 +1138,7 @@ class BIDashboardBuilder {
       this.formatCurrency(t.avgRevenue),
       this.formatNumber(t.avgConversions)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1001,7 +1147,7 @@ class BIDashboardBuilder {
     const headers = ['Rank', 'Partner', 'Revenue', 'Conversions', 'EPC', 'Conv Rate'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#4CAF50').setFontColor('white');
-    
+
     const tableData = data.map((p, index) => [
       index + 1,
       p.partner,
@@ -1010,7 +1156,7 @@ class BIDashboardBuilder {
       this.formatCurrency(p.epc),
       this.formatPercentage(p.conversionRate)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1019,7 +1165,7 @@ class BIDashboardBuilder {
     const headers = ['Campaign', 'Revenue', 'Conversions', 'Clicks', 'Earnings', 'ROAS', 'Conv Rate'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#2196F3').setFontColor('white');
-    
+
     const tableData = data.map(c => [
       c.campaign,
       this.formatCurrency(c.revenue),
@@ -1029,7 +1175,7 @@ class BIDashboardBuilder {
       c.roas.toFixed(2),
       this.formatPercentage(c.conversionRate)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1038,7 +1184,7 @@ class BIDashboardBuilder {
     const headers = ['Campaign', 'Revenue', 'Earnings', 'ROAS', 'Conv Rate', 'CPC'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#FF5722').setFontColor('white');
-    
+
     const tableData = data.map(c => [
       c.campaign,
       this.formatCurrency(c.revenue),
@@ -1047,7 +1193,7 @@ class BIDashboardBuilder {
       this.formatPercentage(c.conversionRate),
       this.formatCurrency(c.cpc)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1056,7 +1202,7 @@ class BIDashboardBuilder {
     const headers = ['Metric', 'Value'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#795548').setFontColor('white');
-    
+
     const tableData = [
       ['Total Revenue', this.formatCurrency(data.totalRevenue)],
       ['Total Earnings', this.formatCurrency(data.totalEarnings)],
@@ -1067,7 +1213,7 @@ class BIDashboardBuilder {
       ['Conversion Rate', this.formatPercentage(data.conversionRate)],
       ['ROI', this.formatPercentage(data.roi)]
     ];
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1076,13 +1222,13 @@ class BIDashboardBuilder {
     const headers = ['Partner', 'Revenue', 'Percentage'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#607D8B').setFontColor('white');
-    
+
     const tableData = data.map(p => [
       p.partner,
       this.formatCurrency(p.revenue),
       this.formatPercentage(p.percentage)
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1091,14 +1237,14 @@ class BIDashboardBuilder {
     const headers = ['Type', 'Severity', 'Message', 'Recommendation'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#F44336').setFontColor('white');
-    
+
     const tableData = data.map(a => [
       a.type,
       a.severity,
       a.message,
       a.recommendation
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1107,13 +1253,13 @@ class BIDashboardBuilder {
     const headers = ['Type', 'Insight', 'Action'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#4CAF50').setFontColor('white');
-    
+
     const tableData = data.map(i => [
       i.type,
       i.insight,
       i.action
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1122,14 +1268,14 @@ class BIDashboardBuilder {
     const headers = ['Category', 'Recommendation', 'Priority', 'Impact'];
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#FF9800').setFontColor('white');
-    
+
     const tableData = data.map(r => [
       r.category,
       r.recommendation,
       r.priority,
       r.impact
     ]);
-    
+
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
     sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
@@ -1151,13 +1297,13 @@ class BIAutomationManager {
     if (!this.config.get('enableAutoRefresh', true)) return;
 
     const refreshInterval = this.config.get('refreshInterval', 24); // hours
-    
+
     // Create a time-driven trigger
     ScriptApp.newTrigger('refreshBIDashboard')
       .timeBased()
       .everyHours(refreshInterval)
       .create();
-    
+
     Logger.log('Auto-refresh setup: Every ' + refreshInterval + ' hours');
   }
 
@@ -1166,18 +1312,18 @@ class BIAutomationManager {
    */
   refreshBIDashboard() {
     Logger.log('Refreshing BI Dashboard...');
-    
+
     try {
       const config = new BIConfig();
       const dataProcessor = new BIDataProcessor(config);
       const dashboardBuilder = new BIDashboardBuilder(config, dataProcessor);
-      
+
       const dashboardUrl = dashboardBuilder.createDashboard();
       Logger.log('BI Dashboard refreshed: ' + dashboardUrl);
-      
+
       // Send notification if configured
       this.sendRefreshNotification(dashboardUrl);
-      
+
     } catch (error) {
       Logger.log('Error refreshing BI Dashboard: ' + error.message);
     }
@@ -1216,7 +1362,7 @@ function createBIDashboard() {
   const config = new BIConfig();
   const dataProcessor = new BIDataProcessor(config);
   const dashboardBuilder = new BIDashboardBuilder(config, dataProcessor);
-  
+
   return dashboardBuilder.createDashboard();
 }
 
@@ -1241,11 +1387,11 @@ function setupBIAutoRefresh() {
  */
 function configureBIDashboard(settings) {
   const config = new BIConfig();
-  
+
   Object.keys(settings).forEach(key => {
     config.set(key, settings[key]);
   });
-  
+
   Logger.log('BI Dashboard configuration updated');
   return config.config;
 }
@@ -1264,7 +1410,7 @@ function getBIConfiguration() {
 function testBIDataProcessing() {
   const config = new BIConfig();
   const dataProcessor = new BIDataProcessor(config);
-  
+
   try {
     const data = dataProcessor.processSourceData();
     Logger.log('Data processing test successful');
@@ -1291,12 +1437,12 @@ function quickBISetup() {
       clickDrop: 0.25
     }
   };
-  
+
   configureBIDashboard(settings);
   setupBIAutoRefresh();
-  
+
   Logger.log('✅ BI Dashboard quick setup complete!');
   Logger.log('Run createBIDashboard() to generate your dashboard');
-  
+
   return settings;
 }
