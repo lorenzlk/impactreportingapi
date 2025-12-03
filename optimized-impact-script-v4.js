@@ -29,9 +29,9 @@ class ImpactConfig {
       // API Configuration
       apiBaseUrl: 'https://api.impact.com',
       maxRetries: 5,
-      retryDelay: 1000,
-      maxRetryDelay: 30000,
-      retryMultiplier: 1.5,
+      retryDelay: 5000, // Increased from 1000 to 5000
+      maxRetryDelay: 60000, // Increased from 30000 to 60000
+      retryMultiplier: 2.0, // Increased from 1.5 to 2.0
 
       // Polling Configuration (Optimized)
       maxPollingAttempts: 30,
@@ -42,9 +42,9 @@ class ImpactConfig {
       quickPollingDelay: 2000,
 
       // Rate Limiting (Optimized)
-      requestDelay: 800,
-      burstDelay: 200,
-      parallelRequestLimit: 3,
+      requestDelay: 2000, // Increased from 800 to 2000
+      burstDelay: 500, // Increased from 200 to 500
+      parallelRequestLimit: 1,
 
       // Data Processing (Memory Optimized)
       maxRowsPerSheet: 30000, // Lowered from 50000 to prevent timeout on large writes
@@ -117,7 +117,30 @@ class ImpactConfig {
         'mp_assigned_tracking_values',
         'mp_assigned_tracking_values',
         'partner_perf_by_vlink',
-        'mp_monthly_close'
+        'mp_monthly_close',
+        'partner_performance_by_ad',
+        'partner_performance_by_ad_legacy',
+        'partner_performance_by_program',
+        'partner_performance_by_program_legacy',
+        'partner_performance_by_category',
+        'partner_performance_by_country',
+        'partner_performance_by_day',
+        'partner_performance_by_day_legacy',
+        'partner_performance_by_device',
+        'partner_performance_by_event_type',
+        'partner_performance_by_month',
+        'partner_performance_by_month_legacy',
+        'partner_performance_by_product',
+        'partner_performance_by_promo_code',
+        'partner_performance_by_referral_type',
+        'partner_performance_by_ref_domain',
+        'partner_performance_by_ref_url',
+        'mp_vanity_links',
+        'Withdrawals',
+        'mp_paystub_history',
+        'mp_action_sku_listing',
+        'action_listing_paystub',
+        'mp_action_listing_clearing_date'
       ], // Reports to exclude from discovery and processing
 
       // Report Inclusion (Overrides exclusion if set)
@@ -558,6 +581,7 @@ class EnhancedAPIClient {
         const response = UrlFetchApp.fetch(url, requestOptions);
         const statusCode = response.getResponseCode();
         const content = response.getContentText();
+        const headers = response.getHeaders();
 
         if (statusCode >= 200 && statusCode < 300) {
           this.circuitBreaker.recordSuccess();
@@ -576,6 +600,32 @@ class EnhancedAPIClient {
             data: content ? JSON.parse(content) : null,
             contentLength: content.length
           };
+        } else if (statusCode === 429) {
+          // Extract Retry-After header if available
+          let retryAfter = 60; // Default 60 seconds
+          const rawRetryAfter = headers['Retry-After'] || headers['retry-after'];
+
+          if (rawRetryAfter) {
+            this.logger.warn('Received Retry-After header', { value: rawRetryAfter });
+            const parsed = parseInt(rawRetryAfter, 10);
+            if (!isNaN(parsed)) {
+              retryAfter = parsed;
+            }
+          }
+
+          // Cap retryAfter to avoid Utilities.sleep errors (max is usually 300000ms)
+          // And to avoid hanging the script for too long
+          if (retryAfter > 300) { // If wait is > 5 minutes
+            const resumeTime = new Date(Date.now() + (retryAfter * 1000));
+            this.logger.error('Rate limit wait time too long (' + retryAfter + 's), failing fast');
+            this.logger.error('RESUME AT: ' + resumeTime.toISOString());
+            throw new Error('API request failed: 429 - Rate Limit Exceeded (Wait time ' + retryAfter + 's > 5m limit). Resume at: ' + resumeTime.toISOString());
+          } else if (retryAfter > 60) {
+            this.logger.warn('Retry-After value ' + retryAfter + 's exceeds cap, limiting to 60s');
+            retryAfter = 60;
+          }
+
+          throw new Error('API request failed: 429 - Rate Limit Exceeded (Retry-After: ' + retryAfter + ')');
         } else {
           throw new Error('API request failed: ' + statusCode + ' - ' + content);
         }
@@ -583,20 +633,41 @@ class EnhancedAPIClient {
         lastError = error;
         this.metrics.recordAPICall(false);
 
+        // Check for fail-fast condition
+        if (error.message.includes('> 5m limit')) {
+          throw error; // Re-throw immediately to stop retries
+        }
+
         if (attempt < maxRetries) {
-          const delay = Math.min(baseDelay * Math.pow(multiplier, attempt), maxDelay);
-          this.logger.warn('API request failed, retrying in ' + delay + 'ms', {
-            endpoint: endpoint,
-            attempt: attempt + 1,
-            error: error.message,
-            delay: delay
-          });
+          let delay;
+
+          // Special handling for rate limits (429)
+          if (error.message.includes('429')) {
+            // Extract delay from error message if possible, or default to 60s
+            const match = error.message.match(/Retry-After: (\d+)/);
+            const retryAfterSeconds = match ? parseInt(match[1], 10) : 60;
+            delay = retryAfterSeconds * 1000;
+
+            this.logger.warn('Rate limit hit (429), waiting ' + retryAfterSeconds + 's before retry', {
+              endpoint: endpoint,
+              attempt: attempt + 1
+            });
+          } else {
+            delay = Math.min(baseDelay * Math.pow(multiplier, attempt), maxDelay);
+            this.logger.warn('API request failed, retrying in ' + delay + 'ms', {
+              endpoint: endpoint,
+              attempt: attempt + 1,
+              error: error.message,
+              delay: delay
+            });
+          }
+
           Utilities.sleep(delay);
         }
       }
     }
 
-    this.circuitBreaker.recordFailure();
+    this.circuitBreaker.recordFailure(lastError);
     this.logger.error('API request failed after all retries', {
       endpoint: endpoint,
       attempts: maxRetries + 1,
@@ -645,9 +716,10 @@ class EnhancedAPIClient {
   }
 
   scheduleExport(reportId, params = {}) {
+    this.logger.info('DEBUG: scheduleExport called', { reportId: reportId, params: params });
     this.logger.debug('Scheduling export', { reportId: reportId, params: params });
 
-    const queryParts = ['subid=mula'];
+    const queryParts = [];
 
     // Add date range parameters if configured
     if (this.config.get('enableDateFiltering', false)) {
@@ -670,8 +742,11 @@ class EnhancedAPIClient {
       queryParts.push(encodeURIComponent(key) + '=' + encodeURIComponent(params[key]));
     }
 
+    const queryString = queryParts.join('&');
+    this.logger.info('DEBUG: Final query string', { queryString: queryString });
+
     const response = this.makeRequest(
-      '/Mediapartners/' + this.credentials.sid + '/ReportExport/' + reportId + '?' + queryParts.join('&')
+      '/Mediapartners/' + this.credentials.sid + '/ReportExport/' + reportId + '?' + queryString
     );
 
     const jobId = response.data.QueuedUri.match(/\/Jobs\/([^/]+)/)[1];
@@ -756,7 +831,12 @@ class CircuitBreaker {
     this.state = 'CLOSED';
   }
 
-  recordFailure() {
+  recordFailure(error) {
+    // Don't count rate limits as system failures
+    if (error && (error.message.includes('429') || error.message.includes('Rate Limit'))) {
+      return;
+    }
+
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
@@ -937,7 +1017,7 @@ class EnhancedSpreadsheetManager {
     const sheetName = this.generateSheetName(reportId, metadata.name);
 
     // Check if we need to refresh this data
-    const shouldRefresh = this.shouldRefreshData(reportId, metadata, spreadsheet);
+    const shouldRefresh = this.shouldRefreshData(reportId, metadata);
 
     if (!shouldRefresh) {
       this.logger.info('Skipping ' + reportId + ' - data is fresh', {
@@ -1205,8 +1285,8 @@ class EnhancedSpreadsheetManager {
           result.sheetName || 'N/A',
           result.rowCount || 0,
           result.columnCount || 0,
-          'SUCCESS (Current)',
-          result.chunked ? 'Split into ' + (result.chunkCount || 0) + ' parts' : '',
+          result.status || 'SUCCESS (Current)',
+          result.chunked ? 'Split into ' + (result.chunkCount || 0) + ' parts' : (result.notes || ''),
           result.processedAt ? (result.processedAt.toLocaleString ? result.processedAt.toLocaleString() : new Date(result.processedAt).toLocaleString()) : new Date().toLocaleString()
         ]);
       });
@@ -1337,12 +1417,12 @@ class EnhancedSpreadsheetManager {
   /**
    * Check if data should be refreshed based on freshness rules
    */
-  shouldRefreshData(reportId, metadata, spreadsheet) {
+  shouldRefreshData(reportId, metadata) {
     const freshnessHours = this.config.get('dataFreshnessHours', 24); // Default 24 hours
     const forceRefresh = this.config.get('forceRefresh', false);
 
     if (forceRefresh) {
-      this.logger.info('Force refresh enabled for ' + reportId);
+      this.logger.info('Force refresh enabled for ' + reportId + ' (Config: ' + forceRefresh + ')');
       return true;
     }
 
@@ -1371,7 +1451,6 @@ class EnhancedSpreadsheetManager {
     });
     return false;
   }
-
   /**
    * Store data freshness information
    */
@@ -1654,6 +1733,14 @@ class UltraOptimizedOrchestrator {
       let exportResults;
       try {
         exportResults = this.scheduleExportsOptimized(pendingReports);
+
+        // Merge skipped reports into successful results for summary
+        if (exportResults.skipped && exportResults.skipped.length > 0) {
+          this.logger.info('Adding ' + exportResults.skipped.length + ' skipped reports to summary');
+          // If successful is undefined (no exports scheduled), initialize it
+          if (!exportResults.successful) exportResults.successful = [];
+          exportResults.successful = exportResults.successful.concat(exportResults.skipped);
+        }
       } catch (timeoutError) {
         if (timeoutError.isTimeout) {
           // Handle timeout during scheduling
@@ -1891,7 +1978,11 @@ class UltraOptimizedOrchestrator {
   scheduleExportsOptimized(reports) {
     this.logger.info('Scheduling exports with optimization', { reportCount: reports.length });
 
+    // Initial delay to let any previous API calls settle (e.g. discovery)
+    Utilities.sleep(2000);
+
     const scheduled = [];
+    const skipped = [];
     const errors = [];
     const parallelLimit = this.config.get('parallelRequestLimit', 3);
     const requestDelay = this.config.get('requestDelay', 800);
@@ -1912,9 +2003,44 @@ class UltraOptimizedOrchestrator {
         const globalIndex = i + j;
 
         try {
+          // Check if we need to refresh this data
+          const shouldRefresh = this.spreadsheetManager.shouldRefreshData(report.Id, {
+            name: report.Name,
+            rowCount: 0 // We don't know row count yet
+          });
+
+          if (!shouldRefresh) {
+            this.logger.info('Skipping ' + report.Id + ' - data is fresh');
+            skipped.push({
+              reportId: report.Id,
+              reportName: report.Name,
+              status: 'SKIPPED (Fresh)',
+              notes: 'Data is fresh (< 24h)',
+              processedAt: new Date()
+            });
+
+            // Mark as complete in progress tracker so it shows up in history/refresh
+            this.progressTracker.markReportComplete(report.Id, {
+              reportName: report.Name,
+              sheetName: this.spreadsheetManager.generateSheetName(report.Id, report.Name),
+              status: 'SKIPPED (Fresh)',
+              notes: 'Data is fresh (< 24h)',
+              processedAt: new Date().toISOString()
+            });
+
+            continue;
+          }
+
           this.logger.info('Scheduling ' + (globalIndex + 1) + '/' + reports.length + ': ' + report.Id);
 
-          const job = this.apiClient.scheduleExport(report.Id);
+          // Add default parameters for Action Listing reports to ensure we get ALL statuses
+          const params = {};
+          if (report.Id.includes('action_listing')) {
+            params.ActionStatus = 'APPROVED,PENDING,REVERSED';
+            this.logger.info('Added ActionStatus=APPROVED,PENDING,REVERSED for ' + report.Id);
+          }
+
+          const job = this.apiClient.scheduleExport(report.Id, params);
           scheduled.push({
             reportId: job.reportId,
             jobId: job.jobId,
@@ -1977,6 +2103,7 @@ class UltraOptimizedOrchestrator {
           // Return partial results so caller can handle gracefully
           return {
             scheduled: scheduled,
+            skipped: skipped,
             errors: errors,
             timeout: true,
             message: 'Scheduling stopped due to timeout. Progress saved. Run resumeDiscovery() to continue.'
@@ -4971,4 +5098,64 @@ function deleteSpecificSheet(sheetName) {
     console.log('Sheet not found: ' + sheetName);
     return 'Sheet not found: ' + sheetName;
   }
+}
+
+// ============================================================================
+// CONVENIENCE FUNCTIONS
+// ============================================================================
+
+/**
+ * START HERE: Run this function to start a fresh discovery
+ * This will CLEAR all previous progress and force a new run
+ */
+
+/**
+ * START HERE: Run this function to start a fresh discovery
+ * This will CLEAR all previous progress and force a new run
+ */
+function startFreshDiscovery() {
+  console.log('🚀 Starting FRESH discovery run... [VERSION CHECK: ' + new Date().toISOString() + ']');
+
+  // 1. Force set the correct Spreadsheet ID
+  const CORRECT_SPREADSHEET_ID = '1aLKEEw7Nx0O1DbZjnXnhOeDjcLRloLN0Y8K2SscZKIc';
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('IMPACT_SPREADSHEET_ID', CORRECT_SPREADSHEET_ID);
+  console.log('✅ Enforced correct Spreadsheet ID:', CORRECT_SPREADSHEET_ID);
+
+  // 2. Clear saved config to ensure defaults (and exclusions) are used
+  // This fixes the issue where old config might override new exclusions
+  props.deleteProperty('IMPACT_OPTIMIZED_CONFIG');
+  console.log('✅ Cleared saved configuration to enforce defaults');
+
+  console.log('This will ignore previous progress and re-process all reports.');
+
+  const orchestrator = new UltraOptimizedOrchestrator();
+
+  // Force restart option
+  orchestrator.runCompleteDiscovery({
+    forceRestart: true
+  });
+}
+
+/**
+ * Run this if you want to resume a stopped run
+ */
+function resumeDiscovery() {
+  console.log('🔄 Resuming discovery run...');
+  const orchestrator = new UltraOptimizedOrchestrator();
+  orchestrator.runCompleteDiscovery({
+    forceRestart: false
+  });
+}
+
+/**
+ * Clear all discovery state (use if stuck)
+ */
+function clearDiscoveryState() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('IMPACT_PROGRESS_V4');
+  props.deleteProperty('IMPACT_COMPLETED_V4');
+  props.deleteProperty('IMPACT_CHECKPOINT');
+  props.deleteProperty('IMPACT_DATA_FRESHNESS');
+  console.log('✅ Cleared all discovery state. You can now run startFreshDiscovery()');
 }

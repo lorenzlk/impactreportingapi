@@ -337,6 +337,7 @@ class TeamDisplayFormatter {
 class TeamMapper {
   constructor(teamConfig) {
     this.teamConfig = teamConfig;
+    this.formatter = new TeamDisplayFormatter();
   }
 
   /**
@@ -346,10 +347,20 @@ class TeamMapper {
     const rules = this.teamConfig.get('teamMappingRules', {});
 
     // Extract identifiers from row
+    // Extract identifiers from row
     const partner = (row['Partner'] || row['partner'] || '').toString().toLowerCase();
     const subid = (row['SubID'] || row['subid'] || row['SubId'] || '').toString().toLowerCase();
     const campaign = (row['Campaign'] || row['campaign'] || '').toString().toLowerCase();
     const conversationId = (row['ConversationID'] || row['conversation_id'] || '').toString().toLowerCase();
+    const pubSubid3 = (row['PubSubid3'] || row['pubsubid3'] || '').toString().trim();
+
+    // 1. PubSubid3 (Highest Priority - Direct Mapping)
+    if (pubSubid3) {
+      const teamName = this.formatter.toDisplayName(pubSubid3);
+      if (teamName && teamName !== 'Unassigned') {
+        return teamName;
+      }
+    }
 
     // Try manual mappings first (highest priority)
     if (rules.manualMappings) {
@@ -626,10 +637,16 @@ class TeamReportGenerator {
 
     const sheet = spreadsheet.insertSheet(sheetName, 0);
 
+    // Calculate timeframe
+    const dateRange = this.calculateDateRange(analysis.enrichedData);
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+
     // Prepare summary data
     const summaryData = [
       ['Team Performance Summary - Mula Conversations', '', '', '', '', '', '', '', '', ''],
-      ['Generated: ' + new Date().toLocaleString(), '', '', '', '', '', '', '', '', ''],
+      ['Timeframe: ' + timeframe + ' | Generated: ' + new Date().toLocaleString(), '', '', '', '', '', '', '', '', ''],
       ['', '', '', '', '', '', '', '', '', ''],
       ['Team', 'Total Revenue', 'Total Commission/Payout', 'Commission Rate', 'Conversions', 'Quantity', 'Unique SKUs', 'Avg Order Value', 'Target', '% of Target']
     ];
@@ -714,6 +731,14 @@ class TeamReportGenerator {
     const headers = Object.keys(firstRow).filter(key => key !== 'team');
     headers.unshift('Team'); // Add team column at the beginning
 
+    // Calculate timeframe for this team
+    const dateRange = this.calculateDateRange(conversations);
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+
+    sheet.getRange('A1').setNote(`Timeframe: ${timeframe}\n` + sheet.getRange('A1').getNote());
+
     // Prepare data rows
     const dataRows = [headers];
     conversations.forEach(row => {
@@ -763,10 +788,16 @@ class TeamReportGenerator {
 
     const sheet = spreadsheet.insertSheet(sheetName);
 
+    // Calculate timeframe
+    const dateRange = this.calculateDateRange(analysis.enrichedData);
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+
     // Prepare data
     const data = [
       ['SKU Performance by Team', '', '', '', '', '', ''],
-      ['Generated: ' + new Date().toLocaleString(), '', '', '', '', '', ''],
+      ['Timeframe: ' + timeframe + ' | Generated: ' + new Date().toLocaleString(), '', '', '', '', '', ''],
       ['', '', '', '', '', '', ''],
       ['Team', 'SKU', 'Revenue', 'Commission/Payout', 'Conversions', 'Quantity', 'Avg Order Value']
     ];
@@ -797,11 +828,31 @@ class TeamReportGenerator {
 
     // Write data
     sheet.getRange(1, 1, data.length, 7).setValues(data);
-
     // Format sheet
     this.formatDataSheet(sheet, 7, data.length);
 
     console.log('SKU performance sheet created with ' + allSKUs.length + ' SKUs');
+  }
+
+  /**
+   * Calculate date range from data rows
+   */
+  calculateDateRange(data) {
+    let start = null;
+    let end = null;
+
+    data.forEach(row => {
+      const dateStr = row['Date'] || row['date'] || row['Period'] || row['period'];
+      if (dateStr) {
+        const date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+          if (!start || date < start) start = date;
+          if (!end || date > end) end = date;
+        }
+      }
+    });
+
+    return { start, end };
   }
 
   /**
@@ -825,9 +876,15 @@ class TeamReportGenerator {
     // Create padding for title rows to match team count
     const padding = new Array(teams.length).fill('');
 
+    // Calculate timeframe
+    const dateRange = this.calculateDateRange(analysis.enrichedData);
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+
     const data = [
       ['Team Performance Comparison', ...padding],
-      ['Generated: ' + new Date().toLocaleString(), ...padding],
+      ['Timeframe: ' + timeframe + ' | Generated: ' + new Date().toLocaleString(), ...padding],
       ['', ...padding],
       ['Metric', ...teams.map(t => t.team)],
       ['Total Revenue', ...teams.map(t => '$' + t.totalRevenue.toFixed(2))],

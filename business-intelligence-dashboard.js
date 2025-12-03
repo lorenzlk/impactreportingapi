@@ -22,7 +22,7 @@ class BIConfig {
     const defaults = {
       // Source data configuration
       sourceSpreadsheetId: this.props.getProperty('IMPACT_SPREADSHEET_ID') || '1aLKEEw7Nx0O1DbZjnXnhOeDjcLRloLN0Y8K2SscZKIc',
-      biSpreadsheetId: null, // Will be created automatically
+      biSpreadsheetId: '1aLKEEw7Nx0O1DbZjnXnhOeDjcLRloLN0Y8K2SscZKIc', // Use the same sheet for output
 
       // Dashboard settings
       enableAutoRefresh: true,
@@ -258,24 +258,44 @@ class BIDataProcessor {
 
     return data.map(row => {
       let team = row['Team'] || 'Unassigned';
+      const pubSubid1 = (row['PubSubid1'] || row['pubsubid1'] || '').toString().toLowerCase();
+      const pubSubid3 = (row['PubSubid3'] || row['pubsubid3'] || '').toString();
 
       // Fallback logic if Team column is missing but PubSubid3 exists
-      if (team === 'Unassigned' || !team) {
-        const pubSubid3 = row['PubSubid3'] || row['pubsubid3'] || '';
-        if (pubSubid3) {
-          // Simple formatter fallback
-          team = pubSubid3.split('-')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(' ');
-        }
+      if ((team === 'Unassigned' || !team) && pubSubid3) {
+        // Simple formatter fallback
+        team = pubSubid3.split('-')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ');
       }
+
+      // Robust column mapping
+      const revenue = this.parseNumber(
+        row['Sale Amount'] || row['Sale_amount'] || row['SaleAmount'] ||
+        row['Revenue'] || row['revenue'] || 0
+      );
+
+      const conversions = this.parseNumber(
+        row['Actions'] || row['Conversions'] || row['conversions'] ||
+        row['Action Count'] || 0
+      );
+
+      const earnings = this.parseNumber(
+        row['Earnings'] || row['earnings'] || row['Commission'] ||
+        row['Pub Commission'] || row['Pub_Commission'] || 0
+      );
+
+      const quantity = this.parseNumber(
+        row['Quantity'] || row['quantity'] || row['Items'] || 1
+      );
 
       return {
         team: team,
-        revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || row['SaleAmount'] || 0),
-        conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
-        earnings: this.parseNumber(row['Earnings'] || row['earnings'] || 0),
-        quantity: this.parseNumber(row['Quantity'] || row['quantity'] || row['Items'] || 1),
+        isMula: pubSubid1.includes('mula'),
+        revenue: revenue,
+        conversions: conversions,
+        earnings: earnings,
+        quantity: quantity,
         date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
       };
     });
@@ -285,10 +305,24 @@ class BIDataProcessor {
     summary.reportCount++;
 
     data.forEach(row => {
-      summary.totalRevenue += this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0);
-      summary.totalConversions += this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0);
-      summary.totalClicks += this.parseNumber(row['Clicks'] || row['clicks'] || 0);
-      summary.totalEarnings += this.parseNumber(row['Earnings'] || row['earnings'] || 0);
+      summary.totalRevenue += this.parseNumber(
+        row['Sale Amount'] || row['Sale_amount'] || row['SaleAmount'] ||
+        row['Revenue'] || row['revenue'] || 0
+      );
+
+      summary.totalConversions += this.parseNumber(
+        row['Actions'] || row['Conversions'] || row['conversions'] ||
+        row['Action Count'] || 0
+      );
+
+      summary.totalClicks += this.parseNumber(
+        row['Clicks'] || row['clicks'] || 0
+      );
+
+      summary.totalEarnings += this.parseNumber(
+        row['Earnings'] || row['earnings'] || row['Commission'] ||
+        row['Pub Commission'] || row['Pub_Commission'] || 0
+      );
 
       const date = this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period']);
       if (date) {
@@ -396,9 +430,14 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setFontSize(20).setFontWeight('bold');
     sheet.getRange('A1:F1').merge();
 
-    // Last updated
-    sheet.getRange('A2').setValue('Last Updated: ' + new Date().toLocaleString());
-    sheet.getRange('A2').setFontStyle('italic');
+    // Timeframe & Last Updated
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe} | Last Updated: ${new Date().toLocaleString()}`);
+    sheet.getRange('A2').setFontStyle('italic').setFontSize(10);
 
     // Key Metrics Row
     const metricsRow = 4;
@@ -437,20 +476,43 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setValue('Team Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
 
-    // Aggregate Team Data
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
+
+    // Aggregate Team Data (All)
     const teamData = this.aggregateTeamData(data.teamPerformance);
+
+    // Aggregate Team Data (Mula Only)
+    // Ensure we are filtering correctly
+    const mulaTeamData = this.aggregateTeamData(data.teamPerformance.filter(d => d.isMula));
 
     if (teamData.length === 0) {
       sheet.getRange('A3').setValue('No Team data available. Ensure SkuLevelAction reports are processed.');
       return;
     }
 
-    // Team Performance Table
-    this.createTeamPerformanceTable(sheet, teamData, 3);
+    // --- Section 1: Overall Team Performance ---
+    sheet.getRange('A3').setValue('Overall Team Performance');
+    sheet.getRange('A3').setFontSize(12).setFontWeight('bold').setFontColor('#1565C0');
+    this.createTeamPerformanceTable(sheet, teamData, 4);
+    this.addTeamRevenueChart(sheet, teamData, 'H4', 'Top Teams by Revenue (Overall)');
 
-    // Team Charts
-    this.addTeamRevenueChart(sheet, teamData, 'H3');
-    this.addTeamConversionChart(sheet, teamData, 'H15');
+    // --- Section 2: Mula Traffic Analysis ---
+    const mulaRow = 4 + Math.min(teamData.length, 20) + 4; // Dynamic positioning
+    sheet.getRange('A' + mulaRow).setValue('Mula Traffic Analysis (SubId1 = "mula")');
+    sheet.getRange('A' + mulaRow).setFontSize(12).setFontWeight('bold').setFontColor('#2E7D32');
+
+    if (mulaTeamData.length > 0) {
+      this.createTeamPerformanceTable(sheet, mulaTeamData, mulaRow + 1);
+      this.addTeamRevenueChart(sheet, mulaTeamData, 'H' + (mulaRow + 1), 'Top Teams by Revenue (Mula Only)');
+    } else {
+      sheet.getRange('A' + (mulaRow + 1)).setValue('No Mula traffic data found. Check if SubId1="mula" exists in source data.');
+    }
 
     sheet.autoResizeColumns(1, 10);
   }
@@ -464,6 +526,14 @@ class BIDashboardBuilder {
     // Header
     sheet.getRange('A1').setValue('Performance Analytics');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
+
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
 
     // Partner Performance Table
     const partnerData = this.aggregatePartnerData(data.partnerPerformance);
@@ -487,15 +557,64 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setValue('Trend Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
 
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
+
     // Daily trends
     const dailyTrends = this.calculateDailyTrends(data);
-    this.createTrendTable(sheet, dailyTrends, 3);
 
-    // Trend charts
-    this.addRevenueTrendChart(sheet, dailyTrends, 'H3');
-    this.addConversionTrendChart(sheet, dailyTrends, 'H15');
+    // Weekly trends (New)
+    const weeklyTrends = this.calculateWeeklyTrends(dailyTrends);
+
+    // --- Section 1: Daily Trends ---
+    sheet.getRange('A3').setValue('Daily Performance');
+    sheet.getRange('A3').setFontSize(12).setFontWeight('bold');
+    this.createTrendTable(sheet, dailyTrends, 4);
+    this.addRevenueTrendChart(sheet, dailyTrends, 'H4', 'Daily Revenue Trend');
+
+    // --- Section 2: Weekly Trends (Optimization Tracking) ---
+    const weeklyRow = 4 + Math.min(dailyTrends.length, 30) + 4;
+    sheet.getRange('A' + weeklyRow).setValue('Weekly Performance (Optimization Tracking)');
+    sheet.getRange('A' + weeklyRow).setFontSize(12).setFontWeight('bold').setFontColor('#E65100');
+
+    this.createTrendTable(sheet, weeklyTrends, weeklyRow + 1);
+    this.addRevenueTrendChart(sheet, weeklyTrends, 'H' + (weeklyRow + 1), 'Weekly Revenue Trend');
 
     sheet.autoResizeColumns(1, 10);
+  }
+
+  calculateWeeklyTrends(dailyTrends) {
+    const weekly = {};
+
+    dailyTrends.forEach(day => {
+      const date = new Date(day.date);
+      // Get start of week (Sunday)
+      const startOfWeek = new Date(date);
+      startOfWeek.setDate(date.getDate() - date.getDay());
+      const weekKey = startOfWeek.toISOString().split('T')[0];
+
+      if (!weekly[weekKey]) {
+        weekly[weekKey] = {
+          date: weekKey,
+          revenue: 0,
+          conversions: 0,
+          clicks: 0,
+          earnings: 0
+        };
+      }
+
+      weekly[weekKey].revenue += day.revenue;
+      weekly[weekKey].conversions += day.conversions;
+      weekly[weekKey].clicks += day.clicks;
+      weekly[weekKey].earnings += day.earnings;
+    });
+
+    return Object.values(weekly).sort((a, b) => new Date(a.date) - new Date(b.date));
   }
 
   createPartnerAnalysis(data) {
@@ -504,6 +623,14 @@ class BIDashboardBuilder {
     sheet.clear();
     sheet.getRange('A1').setValue('Partner Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
+
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
 
     // Partner tier analysis
     const partnerTiers = this.analyzePartnerTiers(data.partnerPerformance);
@@ -527,6 +654,14 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setValue('Campaign Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
 
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
+
     // Campaign performance
     const campaignData = this.aggregateCampaignData(data.campaignPerformance);
     this.createCampaignTable(sheet, campaignData, 3);
@@ -549,6 +684,14 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setValue('Financial Performance Overview');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
 
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
+
     // Financial summary
     const financialData = this.calculateFinancialMetrics(data);
     this.createFinancialTable(sheet, financialData, 3);
@@ -570,6 +713,14 @@ class BIDashboardBuilder {
     sheet.clear();
     sheet.getRange('A1').setValue('Alerts & Business Insights');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
+
+    // Timeframe
+    const dateRange = data.summary.dateRange;
+    const timeframe = dateRange.start && dateRange.end
+      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
+      : 'All Time';
+    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
+    sheet.getRange('A2').setFontStyle('italic');
 
     // Generate alerts
     const alerts = this.generateAlerts(data);
@@ -649,14 +800,14 @@ class BIDashboardBuilder {
     }
   }
 
-  addTeamRevenueChart(sheet, data, position) {
+  addTeamRevenueChart(sheet, data, position, title = 'Top Teams by Revenue') {
     if (data.length === 0) return;
 
     const chart = sheet.newChart()
       .setChartType(Charts.ChartType.BAR)
-      .addRange(sheet.getRange(4, 2, Math.min(data.length, 10), 2)) // Team and Revenue
-      .setPosition(3, 8, 0, 0)
-      .setOption('title', 'Top Teams by Revenue')
+      .addRange(sheet.getRange(sheet.getRange(position).getRow() + 1, 2, Math.min(data.length, 10), 2)) // Team and Revenue
+      .setPosition(sheet.getRange(position).getRow(), 8, 0, 0)
+      .setOption('title', title)
       .setOption('legend', { position: 'none' })
       .build();
 
@@ -731,6 +882,12 @@ class BIDashboardBuilder {
       aggregated[key].conversions += campaign.conversions;
       aggregated[key].clicks += campaign.clicks;
       aggregated[key].earnings += campaign.earnings;
+    });
+
+    Object.values(aggregated).forEach(item => {
+      item.roas = item.earnings > 0 ? item.revenue / item.earnings : 0;
+      item.conversionRate = item.clicks > 0 ? (item.conversions / item.clicks) : 0;
+      item.cpc = item.clicks > 0 ? item.earnings / item.clicks : 0;
     });
 
     return Object.values(aggregated).sort((a, b) => b.revenue - a.revenue);
@@ -1007,15 +1164,15 @@ class BIDashboardBuilder {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD'
-    }).format(value);
+    }).format(value || 0);
   }
 
   formatNumber(value) {
-    return new Intl.NumberFormat('en-US').format(value);
+    return new Intl.NumberFormat('en-US').format(value || 0);
   }
 
   formatPercentage(value) {
-    return value.toFixed(2) + '%';
+    return (value || 0).toFixed(2) + '%';
   }
 
   // Chart creation methods (simplified - would need actual chart creation in Google Sheets)
@@ -1086,8 +1243,12 @@ class BIDashboardBuilder {
       this.formatCurrency(p.aov)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createCampaignPerformanceTable(sheet, data, startRow) {
@@ -1104,8 +1265,12 @@ class BIDashboardBuilder {
       this.formatCurrency(c.cpc)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createTrendTable(sheet, data, startRow) {
@@ -1121,8 +1286,12 @@ class BIDashboardBuilder {
       this.formatCurrency(d.earnings)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createPartnerTierTable(sheet, data, startRow) {
@@ -1139,8 +1308,12 @@ class BIDashboardBuilder {
       this.formatNumber(t.avgConversions)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createTopPerformersTable(sheet, data, startRow) {
@@ -1157,8 +1330,12 @@ class BIDashboardBuilder {
       this.formatPercentage(p.conversionRate)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createCampaignTable(sheet, data, startRow) {
@@ -1176,8 +1353,12 @@ class BIDashboardBuilder {
       this.formatPercentage(c.conversionRate)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createEfficiencyTable(sheet, data, startRow) {
@@ -1194,8 +1375,12 @@ class BIDashboardBuilder {
       this.formatCurrency(c.cpc)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createFinancialTable(sheet, data, startRow) {
@@ -1214,8 +1399,12 @@ class BIDashboardBuilder {
       ['ROI', this.formatPercentage(data.roi)]
     ];
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createRevenueBreakdownTable(sheet, data, startRow) {
@@ -1229,8 +1418,12 @@ class BIDashboardBuilder {
       this.formatPercentage(p.percentage)
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createAlertsTable(sheet, data, startRow) {
@@ -1245,8 +1438,12 @@ class BIDashboardBuilder {
       a.recommendation
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createInsightsTable(sheet, data, startRow) {
@@ -1260,8 +1457,12 @@ class BIDashboardBuilder {
       i.action
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 
   createRecommendationsTable(sheet, data, startRow) {
@@ -1276,8 +1477,12 @@ class BIDashboardBuilder {
       r.impact
     ]);
 
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    if (tableData.length > 0) {
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
+    } else {
+      sheet.getRange(startRow + 1, 1).setValue('No data available');
+    }
   }
 }
 
@@ -1360,6 +1565,9 @@ class BIAutomationManager {
  */
 function createBIDashboard() {
   const config = new BIConfig();
+  // Force the correct spreadsheet ID
+  config.set('biSpreadsheetId', '1aLKEEw7Nx0O1DbZjnXnhOeDjcLRloLN0Y8K2SscZKIc');
+
   const dataProcessor = new BIDataProcessor(config);
   const dashboardBuilder = new BIDashboardBuilder(config, dataProcessor);
 
