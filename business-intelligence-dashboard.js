@@ -108,6 +108,29 @@ class BIDataProcessor {
   }
 
   /**
+   * Helper to find value by fuzzy key match
+   */
+  getValue(row, targetKey) {
+    if (!row) return undefined;
+
+    // Direct match
+    if (row[targetKey] !== undefined) return row[targetKey];
+
+    // Case-insensitive match
+    const lowerTarget = targetKey.toLowerCase();
+    // Check if any key matches case-insensitively
+    let key = Object.keys(row).find(k => k.toLowerCase() === lowerTarget);
+    if (key) return row[key];
+
+    // Normalized match (remove spaces, underscores, special chars)
+    const normalize = k => k.toString().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedTarget = normalize(targetKey);
+
+    key = Object.keys(row).find(k => normalize(k) === normalizedTarget);
+    return key ? row[key] : undefined;
+  }
+
+  /**
    * Extract and normalize data from Impact.com reports
    */
   processSourceData() {
@@ -133,53 +156,196 @@ class BIDataProcessor {
 
     sheets.forEach(sheet => {
       const sheetName = sheet.getName();
-      if (sheetName === 'DISCOVERY SUMMARY') return;
+      const lowerSheetName = sheetName.toLowerCase();
+
+      // Skip Discovery Summary and Dashboard Sheets
+      if (lowerSheetName === 'discovery summary') return;
+      if (sheetName.match(/^[📊📈🏆🤝🎯💰📅]/)) return; // Skip sheets starting with emojis
+      if (lowerSheetName.includes('analysis') && !lowerSheetName.includes('sku')) return; // Skip analysis sheets but keep SkuLevelAction
+      if (lowerSheetName.includes('summary') && !lowerSheetName.includes('sku')) return; // Skip summary sheets
 
       try {
-        const data = this.extractSheetData(sheet);
-        if (data.length === 0) return;
+        const rawData = this.extractSheetData(sheet);
+        if (rawData.length === 0) return;
 
-        // Categorize data based on sheet name
-        if (sheetName.toLowerCase().includes('partner') || sheetName.toLowerCase().includes('subid')) {
-          processedData.partnerPerformance = this.processPartnerData(data);
-        } else if (sheetName.toLowerCase().includes('campaign')) {
-          processedData.campaignPerformance = this.processCampaignData(data);
-        } else if (sheetName.toLowerCase().includes('click')) {
-          processedData.clickPerformance = this.processClickData(data);
-        } else if (sheetName.toLowerCase().includes('conversion')) {
-          processedData.conversionPerformance = this.processConversionData(data);
-        } else if (sheetName.toLowerCase().includes('creative')) {
-          processedData.creativePerformance = this.processCreativeData(data);
-        } else if (sheetName.toLowerCase().includes('skulevelaction')) {
-          // Process Team data from SkuLevelAction reports
-          const teamData = this.processTeamData(data);
-          if (teamData && teamData.length > 0) {
-            processedData.teamPerformance = processedData.teamPerformance.concat(teamData);
-          }
+        // Process specific data types
+        if (lowerSheetName.includes('partner') || lowerSheetName.includes('subid') || lowerSheetName.includes('sub id')) {
+          const partnerData = this.processPartnerData(rawData);
+          processedData.partnerPerformance = partnerData;
+        } else if (lowerSheetName.includes('campaign')) {
+          processedData.campaignPerformance = this.processCampaignData(rawData);
+        } else if (lowerSheetName.includes('click')) {
+          processedData.clickPerformance = this.processClickData(rawData);
+        } else if (lowerSheetName.includes('conversion')) {
+          processedData.conversionPerformance = this.processConversionData(rawData);
+        } else if (lowerSheetName.includes('creative')) {
+          processedData.creativePerformance = this.processCreativeData(rawData);
+        } else if (lowerSheetName.includes('skulevelaction')) {
+          // This is our Team data source
+          const teamData = this.processTeamData(rawData);
+          processedData.teamPerformance = teamData;
         }
-
-        // Update summary
-        this.updateSummary(processedData.summary, data);
 
       } catch (error) {
         Logger.log('Error processing sheet ' + sheetName + ': ' + error.message);
       }
     });
 
+    // Check for potential duplicate data sources
+    const sources = [];
+    if (processedData.partnerPerformance && processedData.partnerPerformance.length > 0) sources.push('Partner (' + processedData.partnerPerformance.length + ' rows)');
+    if (processedData.teamPerformance && processedData.teamPerformance.length > 0) sources.push('Team (' + processedData.teamPerformance.length + ' rows)');
+    if (processedData.campaignPerformance && processedData.campaignPerformance.length > 0) sources.push('Campaign (' + processedData.campaignPerformance.length + ' rows)');
+
+    Logger.log('📊 Data Sources Summary: ' + JSON.stringify(sources));
+
+    if (sources.length > 1) {
+      Logger.log('⚠️ WARNING: Multiple data sources found. Using ' + sources[0] + ' data for summary totals.');
+    }
+
+    // Calculate summary from a SINGLE source of truth to avoid double counting
+    // Priority: Partner Data > Team Data > Campaign Data
+    if (processedData.partnerPerformance && processedData.partnerPerformance.length > 0) {
+      Logger.log('Using Partner Performance for Summary. Sample Row: ' + JSON.stringify(processedData.partnerPerformance[0]));
+      this.calculateSummaryFromData(processedData.summary, processedData.partnerPerformance);
+    } else if (processedData.teamPerformance && processedData.teamPerformance.length > 0) {
+      Logger.log('Using Team Performance for Summary. Sample Row: ' + JSON.stringify(processedData.teamPerformance[0]));
+      this.calculateSummaryFromData(processedData.summary, processedData.teamPerformance);
+    } else if (processedData.campaignPerformance && processedData.campaignPerformance.length > 0) {
+      this.calculateSummaryFromData(processedData.summary, processedData.campaignPerformance);
+    } else {
+      Logger.log('❌ CRITICAL: No data found for summary calculation!');
+    }
+
+    // Run QA Checks
+    this.performDataQA(processedData);
+
     return processedData;
+  }
+
+  /**
+   * Perform Quality Assurance checks on processed data
+   */
+  performDataQA(data) {
+    Logger.log('🔍 Starting Data QA Checks...');
+    const warnings = [];
+
+    // 1. Consistency Check
+    // If we have both Partner and Team data, their totals should be roughly similar
+    if (data.partnerPerformance && data.partnerPerformance.length > 0 &&
+      data.teamPerformance && data.teamPerformance.length > 0) {
+
+      const partnerRevenue = data.partnerPerformance.reduce((sum, p) => sum + p.revenue, 0);
+      const teamRevenue = data.teamPerformance.reduce((sum, t) => sum + t.revenue, 0);
+
+      // Allow for small differences due to rounding or slight data mismatches
+      const diff = Math.abs(partnerRevenue - teamRevenue);
+      const diffPercent = partnerRevenue > 0 ? (diff / partnerRevenue) * 100 : 0;
+
+      if (diffPercent > 5) {
+        warnings.push(`Consistency Warning: Partner Revenue ($${partnerRevenue.toFixed(2)}) and Team Revenue ($${teamRevenue.toFixed(2)}) differ by ${diffPercent.toFixed(2)}%`);
+      }
+    }
+
+    // 2. Coverage Check (Unassigned Teams)
+    if (data.teamPerformance && data.teamPerformance.length > 0) {
+      // Aggregate team data first to handle multiple rows per team if any
+      const teamTotals = {};
+      data.teamPerformance.forEach(t => {
+        if (!teamTotals[t.team]) teamTotals[t.team] = 0;
+        teamTotals[t.team] += t.revenue;
+      });
+
+      const unassignedRevenue = teamTotals['Unassigned'] || 0;
+      const totalRevenue = data.summary.totalRevenue;
+
+      if (totalRevenue > 0) {
+        const unassignedShare = (unassignedRevenue / totalRevenue) * 100;
+        if (unassignedShare > 10) {
+          warnings.push(`Coverage Warning: ${unassignedShare.toFixed(2)}% of revenue is Unassigned. Check team mapping rules.`);
+        }
+      }
+    }
+
+    // 3. Zero Check
+    if (data.summary.totalRevenue === 0) warnings.push('Critical Warning: Total Revenue is $0.00');
+    if (data.summary.totalConversions === 0) warnings.push('Critical Warning: Total Conversions is 0');
+
+    // 4. Date Check
+    if (!data.summary.dateRange.start || !data.summary.dateRange.end) {
+      warnings.push('Data Warning: Invalid or missing date range.');
+    }
+
+    // Log results
+    if (warnings.length > 0) {
+      Logger.log('⚠️ QA Warnings Found:');
+      warnings.forEach(w => Logger.log('   - ' + w));
+    } else {
+      Logger.log('✅ QA Checks Passed: Data looks consistent.');
+    }
+
+    return warnings;
+  }
+
+  /**
+   * Calculate summary metrics from a single data set
+   */
+  calculateSummaryFromData(summary, data) {
+    data.forEach(row => {
+      summary.totalRevenue += (row.revenue || 0);
+      summary.totalConversions += (row.conversions || 0);
+      summary.totalClicks += (row.clicks || 0);
+      summary.totalEarnings += (row.earnings || 0);
+
+      const date = row.date;
+      if (date) {
+        if (!summary.dateRange.start || date < summary.dateRange.start) {
+          summary.dateRange.start = date;
+        }
+        if (!summary.dateRange.end || date > summary.dateRange.end) {
+          summary.dateRange.end = date;
+        }
+      }
+    });
   }
 
   extractSheetData(sheet) {
     const data = sheet.getDataRange().getValues();
     if (data.length < 2) return [];
 
-    const headers = data[0];
-    const rows = data.slice(1);
+    // Find the header row
+    // Look for a row that contains at least one of these common columns
+    const commonColumns = ['Partner', 'Campaign', 'Impact Media Partner Id', 'Sale Amount', 'Revenue', 'Clicks', 'Actions', 'Conversions', 'PubSubid3', 'Team'];
+
+    let headerRowIndex = -1;
+    for (let i = 0; i < Math.min(data.length, 20); i++) {
+      const row = data[i].map(cell => cell.toString().toLowerCase());
+      const match = commonColumns.some(col =>
+        row.some(cell => cell.includes(col.toLowerCase()))
+      );
+
+      if (match) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      Logger.log('⚠️ Could not find a valid header row in sheet: ' + sheet.getName());
+      return [];
+    }
+
+    const headers = data[headerRowIndex];
+    Logger.log('✅ Found headers in ' + sheet.getName() + ' (Row ' + (headerRowIndex + 1) + '): ' + headers.join(', '));
+    const rows = data.slice(headerRowIndex + 1);
 
     return rows.map(row => {
       const obj = {};
       headers.forEach((header, index) => {
-        obj[header] = row[index];
+        // Only add if header is not empty
+        if (header) {
+          obj[header] = row[index];
+        }
       });
       return obj;
     });
@@ -187,67 +353,67 @@ class BIDataProcessor {
 
   processPartnerData(data) {
     return data.map(row => ({
-      partner: row['Partner'] || row['SubID'] || row['subid'] || 'Unknown',
-      revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0),
-      conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
-      clicks: this.parseNumber(row['Clicks'] || row['clicks'] || 0),
-      earnings: this.parseNumber(row['Earnings'] || row['earnings'] || 0),
-      epc: this.parseNumber(row['EPC'] || row['epc'] || 0),
+      partner: this.getValue(row, 'Partner') || this.getValue(row, 'SubID') || this.getValue(row, 'pubsubid1_') || 'Unknown',
+      revenue: this.parseNumber(this.getValue(row, 'Sale_amount') || this.getValue(row, 'sale_amount') || this.getValue(row, 'Revenue') || this.getValue(row, 'Total Revenue') || 0),
+      conversions: this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0),
+      clicks: this.parseNumber(this.getValue(row, 'Clicks') || this.getValue(row, 'raw_clicks') || 0),
+      earnings: this.parseNumber(this.getValue(row, 'Earnings') || this.getValue(row, 'Total Cost') || 0),
+      epc: this.parseNumber(this.getValue(row, 'EPC') || 0),
       conversionRate: this.calculateConversionRate(
-        this.parseNumber(row['Clicks'] || row['clicks'] || 0),
-        this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0)
+        this.parseNumber(this.getValue(row, 'Clicks') || 0),
+        this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0)
       ),
       aov: this.calculateAOV(
-        this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0),
-        this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0)
+        this.parseNumber(this.getValue(row, 'Sale_amount') || this.getValue(row, 'Revenue') || 0),
+        this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0)
       ),
-      date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      date: this.parseDate(this.getValue(row, 'Date') || this.getValue(row, 'Period'))
     }));
   }
 
   processCampaignData(data) {
     return data.map(row => ({
-      campaign: row['Campaign'] || row['campaign'] || 'Unknown',
-      revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0),
-      conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
-      clicks: this.parseNumber(row['Clicks'] || row['clicks'] || 0),
-      earnings: this.parseNumber(row['Earnings'] || row['earnings'] || 0),
-      cpc: this.parseNumber(row['CPC_Cost'] || row['Click_Cost'] || row['cpc'] || 0),
-      date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      campaign: this.getValue(row, 'Campaign') || 'Unknown',
+      revenue: this.parseNumber(this.getValue(row, 'Sale_amount') || this.getValue(row, 'Revenue') || 0),
+      conversions: this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0),
+      clicks: this.parseNumber(this.getValue(row, 'Clicks') || 0),
+      earnings: this.parseNumber(this.getValue(row, 'Earnings') || 0),
+      cpc: this.parseNumber(this.getValue(row, 'CPC_Cost') || this.getValue(row, 'Click_Cost') || this.getValue(row, 'cpc') || 0),
+      date: this.parseDate(this.getValue(row, 'Date') || this.getValue(row, 'Period'))
     }));
   }
 
   processClickData(data) {
     return data.map(row => ({
-      partner: row['Partner'] || row['SubID'] || row['subid'] || 'Unknown',
-      campaign: row['Campaign'] || row['campaign'] || 'Unknown',
-      clicks: this.parseNumber(row['Clicks'] || row['clicks'] || 0),
-      impressions: this.parseNumber(row['Impressions'] || row['impressions'] || 0),
-      ctr: this.parseNumber(row['CTR'] || row['ctr'] || 0),
-      date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      partner: this.getValue(row, 'Partner') || this.getValue(row, 'SubID') || 'Unknown',
+      campaign: this.getValue(row, 'Campaign') || 'Unknown',
+      clicks: this.parseNumber(this.getValue(row, 'Clicks') || 0),
+      impressions: this.parseNumber(this.getValue(row, 'Impressions') || 0),
+      ctr: this.parseNumber(this.getValue(row, 'CTR') || 0),
+      date: this.parseDate(this.getValue(row, 'Date') || this.getValue(row, 'Period'))
     }));
   }
 
   processConversionData(data) {
     return data.map(row => ({
-      partner: row['Partner'] || row['SubID'] || row['subid'] || 'Unknown',
-      campaign: row['Campaign'] || row['campaign'] || 'Unknown',
-      conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
-      revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0),
-      earnings: this.parseNumber(row['Earnings'] || row['earnings'] || 0),
-      date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      partner: this.getValue(row, 'Partner') || this.getValue(row, 'SubID') || 'Unknown',
+      campaign: this.getValue(row, 'Campaign') || 'Unknown',
+      conversions: this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0),
+      revenue: this.parseNumber(this.getValue(row, 'Sale_amount') || this.getValue(row, 'Revenue') || 0),
+      earnings: this.parseNumber(this.getValue(row, 'Earnings') || 0),
+      date: this.parseDate(this.getValue(row, 'Date') || this.getValue(row, 'Period'))
     }));
   }
 
   processCreativeData(data) {
     return data.map(row => ({
-      creative: row['Creative'] || row['creative'] || 'Unknown',
-      campaign: row['Campaign'] || row['campaign'] || 'Unknown',
-      clicks: this.parseNumber(row['Clicks'] || row['clicks'] || 0),
-      conversions: this.parseNumber(row['Actions'] || row['Conversions'] || row['conversions'] || 0),
-      revenue: this.parseNumber(row['Sale_amount'] || row['Revenue'] || row['revenue'] || 0),
-      ctr: this.parseNumber(row['CTR'] || row['ctr'] || 0),
-      date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+      creative: this.getValue(row, 'Creative') || 'Unknown',
+      campaign: this.getValue(row, 'Campaign') || 'Unknown',
+      clicks: this.parseNumber(this.getValue(row, 'Clicks') || 0),
+      conversions: this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || 0),
+      revenue: this.parseNumber(this.getValue(row, 'Sale_amount') || this.getValue(row, 'Revenue') || 0),
+      ctr: this.parseNumber(this.getValue(row, 'CTR') || 0),
+      date: this.parseDate(this.getValue(row, 'Date') || this.getValue(row, 'Period'))
     }));
   }
 
@@ -257,9 +423,9 @@ class BIDataProcessor {
     // OR falls back to PubSubid3 if Team column is missing (though it should be there)
 
     return data.map(row => {
-      let team = row['Team'] || 'Unassigned';
-      const pubSubid1 = (row['PubSubid1'] || row['pubsubid1'] || '').toString().toLowerCase();
-      const pubSubid3 = (row['PubSubid3'] || row['pubsubid3'] || '').toString();
+      let team = this.getValue(row, 'Team') || 'Unassigned';
+      const pubSubid1 = (this.getValue(row, 'PubSubid1') || '').toString().toLowerCase();
+      const pubSubid3 = (this.getValue(row, 'PubSubid3') || '').toString();
 
       // Fallback logic if Team column is missing but PubSubid3 exists
       if ((team === 'Unassigned' || !team) && pubSubid3) {
@@ -270,24 +436,10 @@ class BIDataProcessor {
       }
 
       // Robust column mapping
-      const revenue = this.parseNumber(
-        row['Sale Amount'] || row['Sale_amount'] || row['SaleAmount'] ||
-        row['Revenue'] || row['revenue'] || 0
-      );
-
-      const conversions = this.parseNumber(
-        row['Actions'] || row['Conversions'] || row['conversions'] ||
-        row['Action Count'] || 0
-      );
-
-      const earnings = this.parseNumber(
-        row['Earnings'] || row['earnings'] || row['Commission'] ||
-        row['Pub Commission'] || row['Pub_Commission'] || 0
-      );
-
-      const quantity = this.parseNumber(
-        row['Quantity'] || row['quantity'] || row['Items'] || 1
-      );
+      const revenue = this.parseNumber(this.getValue(row, 'SaleAmount') || this.getValue(row, 'Sale Amount') || this.getValue(row, 'Revenue') || 0);
+      const quantity = this.parseNumber(this.getValue(row, 'Quantity') || 1);
+      const conversions = this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || quantity || 1); // Default to quantity or 1 for SKU reports
+      const earnings = this.parseNumber(this.getValue(row, 'Commission') || this.getValue(row, 'Earnings') || 0);
 
       return {
         team: team,
@@ -296,43 +448,8 @@ class BIDataProcessor {
         conversions: conversions,
         earnings: earnings,
         quantity: quantity,
-        date: this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period'])
+        date: this.parseDate(this.getValue(row, 'ActionDate') || this.getValue(row, 'Action Date') || this.getValue(row, 'Date') || this.getValue(row, 'Period'))
       };
-    });
-  }
-
-  updateSummary(summary, data) {
-    summary.reportCount++;
-
-    data.forEach(row => {
-      summary.totalRevenue += this.parseNumber(
-        row['Sale Amount'] || row['Sale_amount'] || row['SaleAmount'] ||
-        row['Revenue'] || row['revenue'] || 0
-      );
-
-      summary.totalConversions += this.parseNumber(
-        row['Actions'] || row['Conversions'] || row['conversions'] ||
-        row['Action Count'] || 0
-      );
-
-      summary.totalClicks += this.parseNumber(
-        row['Clicks'] || row['clicks'] || 0
-      );
-
-      summary.totalEarnings += this.parseNumber(
-        row['Earnings'] || row['earnings'] || row['Commission'] ||
-        row['Pub Commission'] || row['Pub_Commission'] || 0
-      );
-
-      const date = this.parseDate(row['Date'] || row['date'] || row['Period'] || row['period']);
-      if (date) {
-        if (!summary.dateRange.start || date < summary.dateRange.start) {
-          summary.dateRange.start = date;
-        }
-        if (!summary.dateRange.end || date > summary.dateRange.end) {
-          summary.dateRange.end = date;
-        }
-      }
     });
   }
 
@@ -388,14 +505,8 @@ class BIDashboardBuilder {
 
     // Create dashboard sheets
     this.createExecutiveSummary(data);
-    this.createPerformanceAnalytics(data);
-    this.createTrendAnalysis(data);
-    this.createTrendAnalysis(data);
     this.createTeamAnalysis(data); // New Team Analysis Sheet
-    this.createPartnerAnalysis(data);
-    this.createCampaignAnalysis(data);
     this.createFinancialOverview(data);
-    this.createAlertsAndInsights(data);
 
     Logger.log('BI Dashboard created successfully!');
     return this.biSpreadsheet.getUrl();
@@ -517,166 +628,6 @@ class BIDashboardBuilder {
     sheet.autoResizeColumns(1, 10);
   }
 
-  createPerformanceAnalytics(data) {
-    const sheet = this.getOrCreateSheet('📈 Performance Analytics');
-
-    // Clear existing content
-    sheet.clear();
-
-    // Header
-    sheet.getRange('A1').setValue('Performance Analytics');
-    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-
-    // Timeframe
-    const dateRange = data.summary.dateRange;
-    const timeframe = dateRange.start && dateRange.end
-      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
-      : 'All Time';
-    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
-    sheet.getRange('A2').setFontStyle('italic');
-
-    // Partner Performance Table
-    const partnerData = this.aggregatePartnerData(data.partnerPerformance);
-    this.createPartnerPerformanceTable(sheet, partnerData, 3);
-
-    // Campaign Performance Table
-    const campaignData = this.aggregateCampaignData(data.campaignPerformance);
-    this.createCampaignPerformanceTable(sheet, campaignData, 15);
-
-    // Performance Charts
-    this.addPartnerPerformanceChart(sheet, partnerData, 'H3');
-    this.addCampaignPerformanceChart(sheet, campaignData, 'H15');
-
-    sheet.autoResizeColumns(1, 10);
-  }
-
-  createTrendAnalysis(data) {
-    const sheet = this.getOrCreateSheet('📅 Trend Analysis');
-
-    sheet.clear();
-    sheet.getRange('A1').setValue('Trend Analysis');
-    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-
-    // Timeframe
-    const dateRange = data.summary.dateRange;
-    const timeframe = dateRange.start && dateRange.end
-      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
-      : 'All Time';
-    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
-    sheet.getRange('A2').setFontStyle('italic');
-
-    // Daily trends
-    const dailyTrends = this.calculateDailyTrends(data);
-
-    // Weekly trends (New)
-    const weeklyTrends = this.calculateWeeklyTrends(dailyTrends);
-
-    // --- Section 1: Daily Trends ---
-    sheet.getRange('A3').setValue('Daily Performance');
-    sheet.getRange('A3').setFontSize(12).setFontWeight('bold');
-    this.createTrendTable(sheet, dailyTrends, 4);
-    this.addRevenueTrendChart(sheet, dailyTrends, 'H4', 'Daily Revenue Trend');
-
-    // --- Section 2: Weekly Trends (Optimization Tracking) ---
-    const weeklyRow = 4 + Math.min(dailyTrends.length, 30) + 4;
-    sheet.getRange('A' + weeklyRow).setValue('Weekly Performance (Optimization Tracking)');
-    sheet.getRange('A' + weeklyRow).setFontSize(12).setFontWeight('bold').setFontColor('#E65100');
-
-    this.createTrendTable(sheet, weeklyTrends, weeklyRow + 1);
-    this.addRevenueTrendChart(sheet, weeklyTrends, 'H' + (weeklyRow + 1), 'Weekly Revenue Trend');
-
-    sheet.autoResizeColumns(1, 10);
-  }
-
-  calculateWeeklyTrends(dailyTrends) {
-    const weekly = {};
-
-    dailyTrends.forEach(day => {
-      const date = new Date(day.date);
-      // Get start of week (Sunday)
-      const startOfWeek = new Date(date);
-      startOfWeek.setDate(date.getDate() - date.getDay());
-      const weekKey = startOfWeek.toISOString().split('T')[0];
-
-      if (!weekly[weekKey]) {
-        weekly[weekKey] = {
-          date: weekKey,
-          revenue: 0,
-          conversions: 0,
-          clicks: 0,
-          earnings: 0
-        };
-      }
-
-      weekly[weekKey].revenue += day.revenue;
-      weekly[weekKey].conversions += day.conversions;
-      weekly[weekKey].clicks += day.clicks;
-      weekly[weekKey].earnings += day.earnings;
-    });
-
-    return Object.values(weekly).sort((a, b) => new Date(a.date) - new Date(b.date));
-  }
-
-  createPartnerAnalysis(data) {
-    const sheet = this.getOrCreateSheet('🤝 Partner Analysis');
-
-    sheet.clear();
-    sheet.getRange('A1').setValue('Partner Performance Analysis');
-    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-
-    // Timeframe
-    const dateRange = data.summary.dateRange;
-    const timeframe = dateRange.start && dateRange.end
-      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
-      : 'All Time';
-    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
-    sheet.getRange('A2').setFontStyle('italic');
-
-    // Partner tier analysis
-    const partnerTiers = this.analyzePartnerTiers(data.partnerPerformance);
-    this.createPartnerTierTable(sheet, partnerTiers, 3);
-
-    // Top performers
-    const topPerformers = this.getTopPerformers(data.partnerPerformance, 10);
-    this.createTopPerformersTable(sheet, topPerformers, 10);
-
-    // Partner charts
-    this.addPartnerTierChart(sheet, partnerTiers, 'H3');
-    this.addTopPerformersChart(sheet, topPerformers, 'H15');
-
-    sheet.autoResizeColumns(1, 10);
-  }
-
-  createCampaignAnalysis(data) {
-    const sheet = this.getOrCreateSheet('🎯 Campaign Analysis');
-
-    sheet.clear();
-    sheet.getRange('A1').setValue('Campaign Performance Analysis');
-    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-
-    // Timeframe
-    const dateRange = data.summary.dateRange;
-    const timeframe = dateRange.start && dateRange.end
-      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
-      : 'All Time';
-    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
-    sheet.getRange('A2').setFontStyle('italic');
-
-    // Campaign performance
-    const campaignData = this.aggregateCampaignData(data.campaignPerformance);
-    this.createCampaignTable(sheet, campaignData, 3);
-
-    // Campaign efficiency
-    const efficiencyData = this.calculateCampaignEfficiency(data.campaignPerformance);
-    this.createEfficiencyTable(sheet, efficiencyData, 15);
-
-    // Campaign charts
-    this.addCampaignRevenueChart(sheet, campaignData, 'H3');
-    this.addEfficiencyChart(sheet, efficiencyData, 'H15');
-
-    sheet.autoResizeColumns(1, 10);
-  }
-
   createFinancialOverview(data) {
     const sheet = this.getOrCreateSheet('💰 Financial Overview');
 
@@ -707,35 +658,7 @@ class BIDashboardBuilder {
     sheet.autoResizeColumns(1, 10);
   }
 
-  createAlertsAndInsights(data) {
-    const sheet = this.getOrCreateSheet('🚨 Alerts & Insights');
 
-    sheet.clear();
-    sheet.getRange('A1').setValue('Alerts & Business Insights');
-    sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
-
-    // Timeframe
-    const dateRange = data.summary.dateRange;
-    const timeframe = dateRange.start && dateRange.end
-      ? `${dateRange.start.toLocaleDateString()} - ${dateRange.end.toLocaleDateString()}`
-      : 'All Time';
-    sheet.getRange('A2').setValue(`Timeframe: ${timeframe}`);
-    sheet.getRange('A2').setFontStyle('italic');
-
-    // Generate alerts
-    const alerts = this.generateAlerts(data);
-    this.createAlertsTable(sheet, alerts, 3);
-
-    // Generate insights
-    const insights = this.generateInsights(data);
-    this.createInsightsTable(sheet, insights, 10);
-
-    // Performance recommendations
-    const recommendations = this.generateRecommendations(data);
-    this.createRecommendationsTable(sheet, recommendations, 17);
-
-    sheet.autoResizeColumns(1, 10);
-  }
 
   // Helper methods for data processing and visualization
   getOrCreateSheet(sheetName) {
@@ -1422,66 +1345,6 @@ class BIDashboardBuilder {
       sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
       sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
     } else {
-      sheet.getRange(startRow + 1, 1).setValue('No data available');
-    }
-  }
-
-  createAlertsTable(sheet, data, startRow) {
-    const headers = ['Type', 'Severity', 'Message', 'Recommendation'];
-    sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#F44336').setFontColor('white');
-
-    const tableData = data.map(a => [
-      a.type,
-      a.severity,
-      a.message,
-      a.recommendation
-    ]);
-
-    if (tableData.length > 0) {
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
-    } else {
-      sheet.getRange(startRow + 1, 1).setValue('No data available');
-    }
-  }
-
-  createInsightsTable(sheet, data, startRow) {
-    const headers = ['Type', 'Insight', 'Action'];
-    sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#4CAF50').setFontColor('white');
-
-    const tableData = data.map(i => [
-      i.type,
-      i.insight,
-      i.action
-    ]);
-
-    if (tableData.length > 0) {
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
-    } else {
-      sheet.getRange(startRow + 1, 1).setValue('No data available');
-    }
-  }
-
-  createRecommendationsTable(sheet, data, startRow) {
-    const headers = ['Category', 'Recommendation', 'Priority', 'Impact'];
-    sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#FF9800').setFontColor('white');
-
-    const tableData = data.map(r => [
-      r.category,
-      r.recommendation,
-      r.priority,
-      r.impact
-    ]);
-
-    if (tableData.length > 0) {
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
-      sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
-    } else {
-      sheet.getRange(startRow + 1, 1).setValue('No data available');
     }
   }
 }

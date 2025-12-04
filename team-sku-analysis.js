@@ -343,16 +343,40 @@ class TeamMapper {
   /**
    * Map a conversation/row to a team based on various identifiers
    */
+  /**
+   * Map a conversation/row to a team based on various identifiers
+   */
   mapToTeam(row) {
     const rules = this.teamConfig.get('teamMappingRules', {});
 
-    // Extract identifiers from row
-    // Extract identifiers from row
-    const partner = (row['Partner'] || row['partner'] || '').toString().toLowerCase();
-    const subid = (row['SubID'] || row['subid'] || row['SubId'] || '').toString().toLowerCase();
-    const campaign = (row['Campaign'] || row['campaign'] || '').toString().toLowerCase();
-    const conversationId = (row['ConversationID'] || row['conversation_id'] || '').toString().toLowerCase();
-    const pubSubid3 = (row['PubSubid3'] || row['pubsubid3'] || '').toString().trim();
+    // Helper to find value by fuzzy key match
+    const getValue = (obj, targetKey) => {
+      // Direct match
+      if (obj[targetKey]) return obj[targetKey];
+
+      // Case-insensitive match
+      const lowerTarget = targetKey.toLowerCase();
+      if (obj[lowerTarget]) return obj[lowerTarget];
+
+      // Normalized match (remove spaces, underscores, special chars)
+      const normalize = k => k.toString().toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normalizedTarget = normalize(targetKey);
+
+      const key = Object.keys(obj).find(k => normalize(k) === normalizedTarget);
+      return key ? obj[key] : '';
+    };
+
+    // Extract identifiers from row using robust matching
+    const partner = (getValue(row, 'Partner') || '').toString().toLowerCase();
+    const subid = (getValue(row, 'SubID') || '').toString().toLowerCase();
+    const campaign = (getValue(row, 'Campaign') || '').toString().toLowerCase();
+    const conversationId = (getValue(row, 'ConversationID') || '').toString().toLowerCase();
+
+    // robustly find PubSubid3
+    const pubSubid3 = (getValue(row, 'PubSubid3') || '').toString().trim();
+
+    // Debug log if PubSubid3 is missing but might be expected (optional, can be noisy)
+    // console.log(`Mapping row: PubSubid3=${pubSubid3}, SubID=${subid}`);
 
     // 1. PubSubid3 (Highest Priority - Direct Mapping)
     if (pubSubid3) {
