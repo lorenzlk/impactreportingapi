@@ -144,6 +144,7 @@ class BIDataProcessor {
       conversionPerformance: [],
       creativePerformance: [],
       teamPerformance: [], // Added for Team Analysis
+      skuMetadata: {}, // Map of SKU -> ItemName
       summary: {
         totalRevenue: 0,
         totalConversions: 0,
@@ -184,6 +185,9 @@ class BIDataProcessor {
           // This is our Team data source
           const teamData = this.processTeamData(rawData);
           processedData.teamPerformance = teamData;
+        } else if (lowerSheetName.includes('action sku listing') || lowerSheetName.includes('actionsku')) {
+          // Extract metadata (Item Names) for products
+          this.processSkuMetadata(rawData, processedData.skuMetadata);
         }
 
       } catch (error) {
@@ -441,6 +445,12 @@ class BIDataProcessor {
       const conversions = this.parseNumber(this.getValue(row, 'Actions') || this.getValue(row, 'Conversions') || quantity || 1); // Default to quantity or 1 for SKU reports
       const earnings = this.parseNumber(this.getValue(row, 'Commission') || this.getValue(row, 'Earnings') || 0);
 
+      // Product Details
+      const productUrl = this.getValue(row, 'Fanatics Search URL') || '';
+      const sku = this.getValue(row, 'Sku') || this.getValue(row, 'SKU') || 'Unknown';
+      const category = this.getValue(row, 'Category') || 'Unknown';
+      const itemName = this.getValue(row, 'ItemName') || this.getValue(row, 'Item Name') || '';
+
       return {
         team: team,
         isMula: pubSubid1.includes('mula'),
@@ -448,9 +458,41 @@ class BIDataProcessor {
         conversions: conversions,
         earnings: earnings,
         quantity: quantity,
-        date: this.parseDate(this.getValue(row, 'ActionDate') || this.getValue(row, 'Action Date') || this.getValue(row, 'Date') || this.getValue(row, 'Period'))
+        productUrl: productUrl,
+        sku: sku,
+        category: category,
+        itemName: itemName,
+        itemName: itemName,
+        date: this.parseDate(this.getValue(row, 'ActionDate') || this.getValue(row, 'Action Date') || this.getValue(row, 'Date') || this.getValue(row, 'Period')),
+
+        // Status Breakdown
+        status: this.getValue(row, 'Action Status') || this.getValue(row, 'Status') || 'Pending',
+        revenueApproved: (this.getValue(row, 'Action Status') || '').toString().toLowerCase() === 'approved' ? revenue : 0,
+        revenuePending: (this.getValue(row, 'Action Status') || '').toString().toLowerCase() === 'pending' ? revenue : 0
       };
     });
+  }
+
+  processSkuMetadata(data, metadataStore) {
+    data.forEach(row => {
+      const sku = this.getValue(row, 'SKU') || this.getValue(row, 'Sku');
+      let itemName = this.getValue(row, 'ItemName') || this.getValue(row, 'Item Name');
+      const category = this.getValue(row, 'Category');
+
+      // Fallback strategies for missing Item Names
+      if (!itemName || itemName === '') {
+        if (category && category !== '') {
+          itemName = category; // Use Category as name if ItemName is missing
+        } else {
+          itemName = 'Product ' + sku; // Last resort
+        }
+      }
+
+      if (sku) {
+        metadataStore[sku] = itemName;
+      }
+    });
+    Logger.log('Processed metadata for ' + Object.keys(metadataStore).length + ' SKUs');
   }
 
   parseNumber(value) {
@@ -541,6 +583,10 @@ class BIDashboardBuilder {
     sheet.getRange('A1').setFontSize(20).setFontWeight('bold');
     sheet.getRange('A1:F1').merge();
 
+    // Clear existing charts to prevent stacking
+    const charts = sheet.getCharts();
+    charts.forEach(c => sheet.removeChart(c));
+
     // Timeframe & Last Updated
     const dateRange = data.summary.dateRange;
     const timeframe = dateRange.start && dateRange.end
@@ -584,6 +630,9 @@ class BIDashboardBuilder {
     const sheet = this.getOrCreateSheet('🏆 Team Analysis');
 
     sheet.clear();
+    const charts = sheet.getCharts();
+    charts.forEach(c => sheet.removeChart(c));
+
     sheet.getRange('A1').setValue('Team Performance Analysis');
     sheet.getRange('A1').setFontSize(16).setFontWeight('bold');
 
@@ -624,6 +673,15 @@ class BIDashboardBuilder {
     } else {
       sheet.getRange('A' + (mulaRow + 1)).setValue('No Mula traffic data found. Check if SubId1="mula" exists in source data.');
     }
+
+    // --- Section 3: NIL Powerhouse Matrix ---
+    this.createPowerhouseMatrix(sheet, teamData);
+
+    // --- Section 4: Top Products ---
+    // Add significant padding for the chart (approx 25 rows)
+    // createPowerhouseMatrix starts at getLastRow() + 3, and is 400px high (~20 rows)
+    // We'll pad with empty rows to ensure we don't write over it
+    this.createTopProductsTable(sheet, teamData, data.skuMetadata, 25);
 
     sheet.autoResizeColumns(1, 10);
   }
@@ -680,6 +738,8 @@ class BIDashboardBuilder {
         aggregated[key] = {
           team: key,
           revenue: 0,
+          revenueApproved: 0,
+          revenuePending: 0,
           conversions: 0,
           earnings: 0,
           quantity: 0
@@ -687,6 +747,8 @@ class BIDashboardBuilder {
       }
 
       aggregated[key].revenue += item.revenue;
+      aggregated[key].revenueApproved += (item.revenueApproved || 0);
+      aggregated[key].revenuePending += (item.revenuePending || 0);
       aggregated[key].conversions += item.conversions;
       aggregated[key].earnings += item.earnings;
       aggregated[key].quantity += item.quantity;
@@ -702,7 +764,7 @@ class BIDashboardBuilder {
   }
 
   createTeamPerformanceTable(sheet, data, startRow) {
-    const headers = ['Rank', 'Team', 'Revenue', 'Conversions', 'Earnings', 'AOV', 'Comm. Rate'];
+    const headers = ['Rank', 'Team', 'Total Revenue', 'Approved Rev', 'Pending Rev', 'Conversions', 'Earnings', 'AOV', 'Comm. Rate'];
 
     sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#1976D2').setFontColor('white');
@@ -711,6 +773,8 @@ class BIDashboardBuilder {
       index + 1,
       team.team,
       this.formatCurrency(team.revenue),
+      this.formatCurrency(team.revenueApproved),
+      this.formatCurrency(team.revenuePending),
       this.formatNumber(team.conversions),
       this.formatCurrency(team.earnings),
       this.formatCurrency(team.aov),
@@ -735,6 +799,141 @@ class BIDashboardBuilder {
       .build();
 
     sheet.insertChart(chart);
+  }
+
+  createPowerhouseMatrix(sheet, teamData) {
+    if (!teamData || teamData.length === 0) return;
+
+    // Find row to start (append to bottom)
+    const row = sheet.getLastRow() + 3;
+
+    // Section Header
+    sheet.getRange(row, 1).setValue('🏆 NIL Powerhouse Matrix (Value vs. Volume)');
+    sheet.getRange(row, 1).setFontSize(12).setFontWeight('bold').setFontColor('#673AB7');
+    sheet.getRange(row + 1, 1).setValue('A strategic view of team performance: High Revenue (Volume) vs. High Ticket Size (Value)');
+    sheet.getRange(row + 1, 1).setFontStyle('italic').setFontSize(10);
+
+    // Filter significant data to reduce noise/clutter on chart
+    // Only include teams with > 0 revenue for meaningful scatter
+    const significantTeams = teamData.filter(t => t.revenue > 0);
+
+    if (significantTeams.length === 0) {
+      sheet.getRange(row + 3, 1).setValue('Not enough data for matrix.');
+      return;
+    }
+
+    // Write data for chart (Side area to keep main view clean)
+    // We'll put it starting at Column M (13)
+    const chartDataRow = row + 1;
+    const chartDataCol = 13; // Column M
+
+    // Headers: Team, Revenue (X), AOV (Y)
+    sheet.getRange(chartDataRow, chartDataCol).setValue('Team');
+    sheet.getRange(chartDataRow, chartDataCol + 1).setValue('Volume ($ Revenue)');
+    sheet.getRange(chartDataRow, chartDataCol + 2).setValue('Value ($ AOV)');
+
+    const chartData = significantTeams.map(t => [t.team, t.revenue, t.aov]);
+    sheet.getRange(chartDataRow + 1, chartDataCol, chartData.length, 3).setValues(chartData);
+
+    try {
+      const chart = sheet.newChart()
+        .setChartType(Charts.ChartType.SCATTER)
+        .addRange(sheet.getRange(chartDataRow, chartDataCol, chartData.length + 1, 3))
+        .setPosition(row + 3, 1, 0, 0)
+        .setOption('title', 'NIL Powerhouse Matrix: Value ($ AOV) vs. Volume ($ Revenue)')
+        .setOption('hAxis', { title: 'Total Revenue Volume ($)', format: '$#' })
+        .setOption('vAxis', { title: 'Average Order Value ($)', format: '$#' })
+        .setOption('legend', { position: 'right' })
+        .setOption('pointSize', 7)
+        .setOption('height', 400)
+        .setOption('width', 600)
+        .build();
+
+      sheet.insertChart(chart);
+    } catch (e) {
+      Logger.log('Failed to create Powerhouse Matrix chart: ' + e.message);
+      sheet.getRange(row + 3, 1).setValue('Error creating chart: ' + e.message);
+    }
+  }
+
+  aggregateProductData(teamData, skuMetadata = {}) {
+    const products = {};
+
+    teamData.forEach(item => {
+      // Create a unique key for the product (URL is best, fallback to SKU)
+      const key = item.productUrl || item.sku || 'Unknown';
+
+      if (!products[key]) {
+        products[key] = {
+          productUrl: item.productUrl,
+          sku: item.sku,
+          category: item.category,
+          itemName: item.itemName,
+          revenue: 0,
+          conversions: 0,
+          quantity: 0
+        };
+      }
+
+      // Enrich Name if missing
+      if ((!products[key].itemName || products[key].itemName === '') && products[key].sku && skuMetadata[products[key].sku]) {
+        products[key].itemName = skuMetadata[products[key].sku];
+      }
+
+      products[key].revenue += item.revenue;
+      products[key].conversions += item.conversions;
+      products[key].quantity += item.quantity;
+
+      // Update metadata if it was missing and now present
+      if (!products[key].sku || products[key].sku === 'Unknown') products[key].sku = item.sku;
+      if (!products[key].itemName) products[key].itemName = item.itemName;
+    });
+
+    return Object.values(products).sort((a, b) => b.revenue - a.revenue);
+  }
+
+  createTopProductsTable(sheet, teamData, skuMetadata, paddingRows = 4) {
+    if (!teamData || teamData.length === 0) return;
+
+    // Use padding to clear previous elements (like charts)
+    const row = sheet.getLastRow() + paddingRows;
+
+    // Header
+    sheet.getRange(row, 1).setValue('🛍️ Top Selling Products');
+    sheet.getRange(row, 1).setFontSize(12).setFontWeight('bold').setFontColor('#E91E63'); // Pink/Red for products
+
+    // Aggregate Data
+    const products = this.aggregateProductData(teamData, skuMetadata).slice(0, 20); // Top 20
+
+    if (products.length === 0) {
+      sheet.getRange(row + 1, 1).setValue('No product data available.');
+      return;
+    }
+
+    const startRow = row + 1;
+    const headers = ['Rank', 'SKU', 'Category', 'Item Name', 'Revenue', 'Units Sold', 'Product Link'];
+
+    sheet.getRange(startRow, 1, 1, headers.length).setValues([headers]);
+    sheet.getRange(startRow, 1, 1, headers.length).setFontWeight('bold').setBackground('#AD1457').setFontColor('white');
+
+    const tableData = products.map((p, index) => {
+      const linkFormula = p.productUrl
+        ? `=HYPERLINK("${p.productUrl}", "View Item 🔗")`
+        : 'No Link';
+
+      return [
+        index + 1,
+        p.sku,
+        p.category,
+        p.itemName,
+        this.formatCurrency(p.revenue),
+        this.formatNumber(p.quantity),
+        linkFormula
+      ];
+    });
+
+    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setValues(tableData);
+    sheet.getRange(startRow + 1, 1, tableData.length, headers.length).setBorder(true, true, true, true, true, true);
   }
 
   addTeamConversionChart(sheet, data, position) {
