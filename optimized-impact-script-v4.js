@@ -78,7 +78,7 @@ class ImpactConfig {
       // Date Range Filtering
       enableDateFiltering: true, // Enable date range filtering
       startDate: '2025-09-01T00:00:00Z', // Start date for reports (ISO 8601 format) - Updated to Sep 1, 2025
-      endDate: '2025-12-31T23:59:59Z', // End date for reports (ISO 8601 format)
+      endDate: new Date().toISOString().split('.')[0] + 'Z', // Dynamic: Current time, NO milliseconds (API requirement)
       dateRangePresets: {
         'august-2025': { start: '2025-08-01', end: '2025-08-31' },
         'september-2025': { start: '2025-09-01', end: '2025-09-30' },
@@ -5751,6 +5751,28 @@ class SKUTeamAnalyzer {
       enrichedData = this.teamMapper.batchMapToTeams(skuData);
     }
 
+    // FILTER: Remove Unassigned records as requested
+    // "Only things with PubsubID Mula and a team name or Mula as team name"
+    const initialCount = enrichedData.length;
+    enrichedData = enrichedData.filter(row => {
+      const team = (row.team || '').toString().trim();
+      const pubSubid1 = (row['PubSubid1'] || row['PubSubid1_'] || row['pubsubid1'] || '').toString().toLowerCase().trim();
+
+      // strict check: Team must not be 'Unassigned' AND PubSubid1 should be 'mula' (if it exists in data)
+      const isUnassigned = team.toLowerCase() === 'unassigned';
+
+      // Note: If PubSubid1 is missing from the source data, we trust the Team mapping.
+      // If it exists, we enforce it must be 'mula'.
+      const isMulaPartner = pubSubid1 === '' || pubSubid1 === 'mula';
+
+      return team && !isUnassigned && isMulaPartner;
+    });
+    const filteredCount = enrichedData.length;
+
+    if (initialCount !== filteredCount) {
+      console.log(`ℹ️ Filtered out ${initialCount - filteredCount} Unassigned records.`);
+    }
+
     // Aggregate by team
     const teamStats = {};
     const skuByTeam = {};
@@ -9646,4 +9668,38 @@ function analyzeUnassignedRecords() {
     .forEach(([key, count]) => {
       console.log(`   - "${key}": ${count}`);
     });
+}
+
+/**
+ * MASTER UPDATE FUNCTION
+ * Runs the complete data pipeline in order:
+ * 1. Discovery (Fetch new data)
+ * 2. BI Dashboard (Update main dashboard)
+ * 3. Team Analysis (Update team/SKU dashboards)
+ */
+function runMasterUpdate() {
+  Logger.log('🚀 STARTING MASTER UPDATE PIPELINE');
+  const startTime = Date.now();
+
+  try {
+    // 1. Fetch Data
+    Logger.log('\n📦 STEP 1/3: Fetching Data (Discovery)...');
+    runCompleteDiscovery();
+
+    // 2. Update BI Dashboard
+    Logger.log('\n📊 STEP 2/3: Updating BI Dashboard...');
+    refreshBIDashboard();
+
+    // 3. Update Team Analysis
+    Logger.log('\n🏆 STEP 3/3: Updating Team Analysis...');
+    runCompleteTeamAnalysisPipeline();
+
+    const duration = ((Date.now() - startTime) / 1000 / 60).toFixed(2);
+    Logger.log('\n✅ MASTER UPDATE COMPLETE');
+    Logger.log('⏱️ Total time: ' + duration + ' minutes');
+
+  } catch (error) {
+    Logger.log('\n❌ MASTER UPDATE FAILED: ' + error.message);
+    throw error;
+  }
 }

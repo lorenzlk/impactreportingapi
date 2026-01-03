@@ -8,6 +8,12 @@ The team tracking system uses a **priority-based approach**:
 2. **PubSubid3 Automatic** - For new data going forward ✅ **This is the default**
 3. **Unassigned** - Fallback for records without team info
 
+## Data Structure Definitions
+
+For documentation purposes, the system relies on the following structure:
+- **PubSubid1**: Must be `mula` (identifies the partner).
+- **PubSubid3**: Contains the **Team Name** (e.g., `ole-miss-rebels`, `michigan-wolverines`).
+
 ## Why Manual Mappings?
 
 Manual mappings are **only needed for historical data** that was created before PubSubid3 was implemented. All new data going forward will automatically have the correct team from PubSubid3.

@@ -4,16 +4,22 @@
 
 Your configuration is ready for these college teams:
 
-1. 🏈 **USC Trojans**
-2. 🏈 **NC State Wolfpack**
-3. 🏈 **Ole Miss Rebels**
-4. 🏈 **Florida Gators**
-5. 🏈 **LSU Tigers**
-6. 🏈 **Penn State Nittany Lions**
-7. 🏈 **Notre Dame Fighting Irish**
-8. 🏈 **Michigan Wolverines**
-9. 🏈 **Ohio State Buckeyes**
-10. 🏈 **Auburn Tigers**
+1. 🏈 **USC Trojans** (`usc-trojans`)
+2. 🏈 **NC State Wolfpack** (`nc-state-wolfpack`)
+3. 🏈 **Ole Miss Rebels** (`ole-miss-rebels`)
+4. 🏈 **Florida Gators** (`florida-gators`)
+5. 🏈 **LSU Tigers** (`lsu-tigers`)
+6. 🏈 **Penn State Nittany Lions** (`penn-state-nittany-lions`)
+7. 🏈 **Notre Dame Fighting Irish** (`notre-dame-fighting-irish`)
+8. 🏈 **Michigan Wolverines** (`michigan-wolverines`)
+9. 🏈 **Ohio State Buckeyes** (`ohio-state-buckeyes`)
+10. 🏈 **Auburn Tigers** (`auburn-tigers`)
+
+## 📋 Data Structure
+
+The system expects the following data format from Impact.com:
+- **PubSubid1**: Must be `mula`
+- **PubSubid3**: Contains the **Team Name** (e.g., `usc-trojans`)
 
 ## 🚀 Quick Start (3 Steps)
 
@@ -65,9 +71,28 @@ runCompleteTeamAnalysisPipeline()
    - Side-by-side team metrics
    - Market share by team
 
-## 🎯 Pattern Matching
+## 🎯 Team Identification
 
-The system automatically maps Mula conversations to teams based on SubID patterns:
+The system primarily identifies teams using the **PubSubid3** value (Direct Match).
+
+### Verified Identifiers (PubSubid3)
+
+If the `PubSubid3` column matches one of these valid slugs, it is automatically assigned:
+
+- `michigan-wolverines`
+- `penn-state-nittany-lions`
+- `florida-gators`
+- `auburn-tigers`
+- `ohio-state-buckeyes`
+- `notre-dame-fighting-irish`
+- `nc-state-wolfpack`
+- `usc-trojans`
+- `ole-miss-rebels`
+- `lsu-tigers`
+
+### Legacy Pattern Matching (Fallback)
+
+If `PubSubid3` is missing, the system falls back to these fuzzy patterns:
 
 ### USC Trojans
 Matches if SubID contains: `usc`, `trojans`, `trojan`, `southern_cal`, or `sc`

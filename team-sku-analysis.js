@@ -484,6 +484,28 @@ class SKUTeamAnalyzer {
       enrichedData = this.teamMapper.batchMapToTeams(skuData);
     }
 
+    // FILTER: Remove Unassigned records as requested
+    // "Only things with PubsubID Mula and a team name or Mula as team name"
+    const initialCount = enrichedData.length;
+    enrichedData = enrichedData.filter(row => {
+      const team = (row.team || '').toString().trim();
+      const pubSubid1 = (row['PubSubid1'] || row['PubSubid1_'] || row['pubsubid1'] || '').toString().toLowerCase().trim();
+
+      // strict check: Team must not be 'Unassigned' AND PubSubid1 should be 'mula' (if it exists in data)
+      const isUnassigned = team.toLowerCase() === 'unassigned';
+
+      // Note: If PubSubid1 is missing from the source data, we trust the Team mapping.
+      // If it exists, we enforce it must be 'mula'.
+      const isMulaPartner = pubSubid1 === '' || pubSubid1 === 'mula';
+
+      return team && !isUnassigned && isMulaPartner;
+    });
+    const filteredCount = enrichedData.length;
+
+    if (initialCount !== filteredCount) {
+      console.log(`ℹ️ Filtered out ${initialCount - filteredCount} Unassigned records.`);
+    }
+
     // Aggregate by team
     const teamStats = {};
     const skuByTeam = {};
